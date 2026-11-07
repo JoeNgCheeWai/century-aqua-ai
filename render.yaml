@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: caip-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # you enter this in the Render dashboard
+      - key: GATEKEEPER_MODEL
+        value: claude-haiku-5-5
+      - key: SPECIALIST_MODEL
+        value: claude-sonnet-5-5
+      - key: ALLOWED_ORIGINS
+        sync: false          # your Vercel production URL(s), comma-separated
+      - key: ALLOWED_ORIGIN_REGEX
+        sync: false          # optional: regex matching Vercel preview URLs
