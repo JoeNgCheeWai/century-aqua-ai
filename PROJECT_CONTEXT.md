@@ -58,5 +58,5 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
 ## 6. Pending Tasks (For AI CTO)
 - [ ] **DEFERRED:** Generate and integrate images for remaining products (Premium Feed Supplement, Semi-Automated Inoculation System, Fish Vaccines, Health Diagnostics, RAS Systems). Teal gradient placeholders are used until real product photos are available.
 - [ ] Optimization pass: migrate `<img>` tags to `next/image` (clears 2 `no-img-element` lint warnings).
-- [ ] Add hero video at `frontend/public/videos/hero.mp4` (currently missing; the Hero section references it).
+- [x] Hero video at `frontend/public/videos/hero.mp4` (fixed: file was misnamed `hero.mp4.mp4`; must be committed and redeployed).
 - [ ] Optional: run a local Docker build test of `backend/Dockerfile` (not yet run; Render builds it in the cloud).
