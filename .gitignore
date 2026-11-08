@@ -1,22 +1,22 @@
-   # Environment variables (NEVER commit these)
-   .env
-   .env.local
-   .env.*.local
-   backend/.env
-   frontend/.env
+# Environment variables (NEVER commit these)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
 
-   # Dependencies
-   node_modules/
-   frontend/node_modules/
-   backend/venv/
-   backend/.venv/
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/venv/
+backend/.venv/
 
-   # Build outputs
-   frontend/.next/
-   frontend/out/
-   __pycache__/
-   *.pyc
+# Build outputs
+frontend/.next/
+frontend/out/
+__pycache__/
+*.pyc
 
-   # OS files
-   .DS_Store
-   Thumbs.db
+# OS files
+.DS_Store
+Thumbs.db

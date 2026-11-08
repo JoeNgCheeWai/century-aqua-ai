@@ -20,6 +20,12 @@ services:
         value: "4096"
       - key: INTERNAL_CAO_KEY
         sync: false          # secret; required to enable the internal-only /api/cao endpoint
+      - key: PINECONE_API_KEY
+        sync: false          # secret; AI_CAO knowledge base (RAG)
+      - key: PINECONE_INDEX
+        sync: false          # index name (dimension 1536, cosine)
+      - key: OPENAI_API_KEY
+        sync: false          # secret; used only for text-embedding-3-small
       - key: ALLOWED_ORIGINS
         sync: false          # your Vercel production URL(s), comma-separated
       - key: ALLOWED_ORIGIN_REGEX
