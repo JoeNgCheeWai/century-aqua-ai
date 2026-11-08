@@ -8,6 +8,8 @@ print("="*40)
 print("API KEY:", "SET" if os.getenv("ANTHROPIC_API_KEY") else "NOT FOUND")
 print("GATEKEEPER MODEL:", os.getenv("GATEKEEPER_MODEL", "NOT FOUND"))
 print("SPECIALIST MODEL:", os.getenv("SPECIALIST_MODEL", "NOT FOUND"))
+print("ALLOWED_ORIGINS RAW:", repr(os.getenv("ALLOWED_ORIGINS")))
+print("ALLOWED_ORIGIN_REGEX RAW:", repr(os.getenv("ALLOWED_ORIGIN_REGEX")))
 print("="*40)
 
 from fastapi import FastAPI, HTTPException
@@ -22,7 +24,7 @@ app = FastAPI(title="Century Aquaculture Intelligence Platform (CAIP)")
 # Comma-separated list of allowed frontend origins (no trailing slashes).
 # Defaults keep local development working.
 ALLOWED_ORIGINS = [
-    origin.strip()
+    origin.strip().rstrip("/")
     for origin in os.getenv(
         "ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     ).split(",")

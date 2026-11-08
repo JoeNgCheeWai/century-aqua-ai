@@ -51,7 +51,7 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
 - [x] Scroll animations: lightweight fade-in/slide-up via the `Reveal` component (IntersectionObserver, runs once, respects reduced-motion) on Products and Services.
 - [x] Deployment configuration: `backend/Dockerfile`, `render.yaml` (Render), `frontend/vercel.json` (Vercel), `.env.example` files, pinned `backend/requirements.txt`.
   - Backend env vars: `ANTHROPIC_API_KEY`, `GATEKEEPER_MODEL`, `SPECIALIST_MODEL`, `ALLOWED_ORIGINS`, optional `ALLOWED_ORIGIN_REGEX` (Vercel previews).
-  - Frontend env var: `NEXT_PUBLIC_API_URL` (backend base URL, no trailing slash; baked in at build time).
+  - Frontend env var: `BACKEND_URL` (Render backend base URL, no trailing slash; used at build time by the `/api/*` rewrite in `next.config.ts`). The browser calls `/api/chat` on the Vercel domain and Vercel proxies it to Render, so CORS is bypassed in production. Redeploy Vercel after changing it.
   - Security: API-key debug print removed from `main.py`; never commit `backend/.env`.
 
 
