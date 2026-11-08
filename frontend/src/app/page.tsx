@@ -79,9 +79,24 @@ function Navbar() {
 }
 
 function Hero() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Slow the background video down so small camera movements are less noticeable.
+  // Also re-applied on loadedmetadata because some browsers reset the rate when the source loads.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const applyRate = () => {
+      video.playbackRate = 0.75;
+    };
+    applyRate();
+    video.addEventListener("loadedmetadata", applyRate);
+    return () => video.removeEventListener("loadedmetadata", applyRate);
+  }, []);
+
   return (
     <section className="relative flex h-screen w-full items-center justify-center overflow-hidden bg-[#0A2342]">
-      <video className="absolute inset-0 h-full w-full object-cover opacity-40" autoPlay muted loop playsInline>
+      <video ref={videoRef} className="absolute inset-0 h-full w-full scale-105 object-cover opacity-30 blur-[2px]" autoPlay muted loop playsInline>
         <source src="/videos/hero.mp4" type="video/mp4" />
       </video>
       <div className="absolute inset-0 bg-gradient-to-b from-[#0A2342]/80 via-[#0A2342]/50 to-[#0A2342]" />
