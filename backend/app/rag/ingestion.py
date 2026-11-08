@@ -8,9 +8,10 @@ operator needs to know when a document was not stored.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.rag import embeddings, vector_db
 from app.rag.document_processor import process_document
@@ -33,9 +34,12 @@ async def ingest_file(
     *,
     dry_run: bool = False,
     log: Callable[[str], None] = print,
+    extra_metadata: Mapping[str, Any] | None = None,
 ) -> IngestResult:
     """
     Ingest one PDF into the knowledge base.
+
+    ``extra_metadata`` is stored on every chunk (see ``process_document``).
 
     With ``dry_run=True`` the PDF is extracted and chunked and a summary is
     logged, but OpenAI and Pinecone are never called (no keys needed).
@@ -58,7 +62,9 @@ async def ingest_file(
         await asyncio.to_thread(init_pinecone)
 
     log(f"  extracting and chunking {path.name} ...")
-    chunks = await asyncio.to_thread(process_document, path, document_type)
+    chunks = await asyncio.to_thread(
+        process_document, path, document_type, extra_metadata=extra_metadata
+    )
     pages = len({chunk["page_number"] for chunk in chunks})
     document_id = chunks[0]["document_id"]
     log(f"  {len(chunks)} chunks from {pages} page(s) with text (document_id {document_id})")

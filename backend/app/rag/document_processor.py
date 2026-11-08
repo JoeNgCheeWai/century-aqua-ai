@@ -25,6 +25,7 @@ import hashlib
 import logging
 import math
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,20 @@ DOCUMENT_TYPES: tuple[str, ...] = (
     "regulation",
     "market_report",
     "other",
+)
+
+# DOCUMENT_TYPES is what the manual ingest CLIs accept (our own documents).
+# "auto_sourced_literature" is reserved for scripts/auto_fetch_literature.py so
+# public papers can never be mislabelled as, or confused with, internal data.
+AUTO_SOURCED_TYPE = "auto_sourced_literature"
+ALL_DOCUMENT_TYPES: tuple[str, ...] = DOCUMENT_TYPES + (AUTO_SOURCED_TYPE,)
+AUTO_SOURCE_APIS: tuple[str, ...] = ("crossref", "pubmed")
+
+_RESERVED_METADATA_KEYS = frozenset(
+    {
+        "document_id", "chunk_id", "source_file", "page_number",
+        "section_heading", "date_ingested", "document_type", "text", "embedding",
+    }
 )
 
 DEFAULT_CHUNK_SIZE = 500  # tokens (estimated)
@@ -344,14 +359,49 @@ def _document_id(path: Path) -> str:
     return digest.hexdigest()[:16]
 
 
+def _validate_extra_metadata(
+    document_type: str, extra: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Check and normalise caller-supplied chunk metadata (scalars only)."""
+    cleaned: dict[str, Any] = {}
+    for key, value in (extra or {}).items():
+        if key in _RESERVED_METADATA_KEYS:
+            raise ValueError(f"extra_metadata may not override {key!r}")
+        if value is None:
+            value = ""
+        if not isinstance(value, (str, int, float, bool)):
+            raise ValueError(f"extra_metadata[{key!r}] must be a string, number or bool")
+        cleaned[key] = value
+
+    if document_type == AUTO_SOURCED_TYPE:
+        if cleaned.get("source_api") not in AUTO_SOURCE_APIS:
+            raise ValueError(
+                f"auto_sourced_literature needs source_api in {AUTO_SOURCE_APIS}"
+            )
+        title = cleaned.get("paper_title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("auto_sourced_literature needs a non-empty paper_title")
+        year = cleaned.get("year")
+        this_year = datetime.now(timezone.utc).year
+        if isinstance(year, bool) or not isinstance(year, int) or not 1800 <= year <= this_year + 1:
+            raise ValueError("auto_sourced_literature needs an integer publication year")
+    return cleaned
+
+
 def process_document(
     file_path: str | Path,
     document_type: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_OVERLAP,
+    extra_metadata: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Extract, chunk and annotate a PDF.
+
+    ``extra_metadata`` (optional scalar fields) is copied onto every chunk and
+    cannot override the core fields. For document_type ``auto_sourced_literature``
+    it MUST include ``source_api`` ("crossref" or "pubmed"), ``paper_title`` and
+    an integer ``year``, so public literature is always identifiable.
 
     Each returned chunk dictionary has:
         document_id, chunk_id, source_file, page_number, section_heading,
@@ -367,12 +417,13 @@ def process_document(
         FileNotFoundError: the file does not exist.
         DocumentProcessingError: no extractable text, or no usable chunks.
     """
-    if document_type not in DOCUMENT_TYPES:
+    if document_type not in ALL_DOCUMENT_TYPES:
         raise ValueError(
             f"Unknown document_type {document_type!r}. "
-            f"Expected one of: {', '.join(DOCUMENT_TYPES)}"
+            f"Expected one of: {', '.join(ALL_DOCUMENT_TYPES)}"
         )
     _validate_chunk_params(chunk_size, overlap)
+    extra = _validate_extra_metadata(document_type, extra_metadata)
 
     path = Path(file_path)
     pages = extract_text_from_pdf(path)  # raises FileNotFoundError / ProcessingError
@@ -391,6 +442,7 @@ def process_document(
                 continue
             chunks.append(
                 {
+                    **extra,
                     "document_id": document_id,
                     "chunk_id": f"{document_id}-{index:05d}",
                     "source_file": path.name,

@@ -130,7 +130,7 @@ The AI_CAO can retrieve excerpts from proprietary documents (NUS trial data, pat
 - **Embeddings:** OpenAI `text-embedding-3-small` (1536 dimensions). Env var: `OPENAI_API_KEY`. Used only for embeddings, never for answers.
 - **PDF extraction:** PyMuPDF first, pdfplumber as fallback. Scanned PDFs (no text layer) are NOT supported; there is no OCR.
 - **Chunking:** structure-aware ("semantic" by sentence and section heading, not by embedding similarity), about 500 tokens per chunk with about 50 tokens of overlap. Token counts are estimates (about 0.75 words per token). Chunks never span pages.
-- **Metadata per chunk:** `document_id`, `chunk_id`, `source_file`, `page_number`, `section_heading`, `date_ingested`, `document_type`, plus `text` (needed to rebuild the context at query time). `document_type` is one of `trial_data`, `patent`, `regulation`, `market_report`, `other`.
+- **Metadata per chunk:** `document_id`, `chunk_id`, `source_file`, `page_number`, `section_heading`, `date_ingested`, `document_type`, plus `text` (needed to rebuild the context at query time). `document_type` is one of `trial_data`, `patent`, `regulation`, `market_report`, `other` (manual ingestion), or `auto_sourced_literature` (public papers from the automated fetcher, with extra `source_api`, `paper_title`, `year`).
 - **IDs:** `document_id` is a hash of the file contents, and `chunk_id` is `<document_id>-<n>`. Re-ingesting an unchanged file overwrites its chunks. A changed file gets a new id and its old chunks stay in the index until deleted manually.
 
 ### Code (all in `backend/app/rag/`)
@@ -159,8 +159,22 @@ If RAG is not configured, Pinecone or OpenAI is down, retrieval times out (20 s)
 4. Ingest a folder: `venv\Scripts\python.exe scripts\ingest_directory.py DIR --type market_report` (add `--recursive` for subfolders). One run uses one document type for every file.
 5. Documents are stored in Pinecone, so ingesting locally makes them available to the Render deployment, as long as both use the same index.
 
+### Automated literature sourcing (`backend/scripts/auto_fetch_literature.py`)
+Populates the knowledge base with public, open-access scientific papers when there are few internal documents. It is a **targeted fetcher, not a web scraper**: it only talks to two trusted APIs and never visits arbitrary sites.
+
+- **Sources:** Crossref REST API (journal articles with a licence and a PDF link) and NCBI E-utilities over PubMed Central (PMC, PubMed's full-text archive). PMC PDFs come from NCBI's open-data bucket. A hardcoded list of aquaculture queries (biofloc, SND, RAS ammonia, tilapia seawater culture, probiotics) is used; `--query` overrides it.
+- **Run:** `venv\Scripts\python.exe scripts\auto_fetch_literature.py --dry-run` (search only, free, no keys), then `... --limit 3`. Other flags: `--source crossref|pubmed|both`, `--yes`, `--query "text"`.
+
+**Guardrails (DO NOT WEAKEN):**
+- **Open Access Only.** A paper is used only if its licence is CC BY, CC BY-SA or CC0/public domain (commercial reuse allowed). Publisher text-mining licences (Elsevier, Springer), NonCommercial (NC), NoDerivatives (ND), embargoed and unknown licences are skipped. PubMed Central licences are confirmed from NCBI's own record per paper. A download must start with a real PDF header, otherwise the paper is skipped. Only HTTPS links to public addresses are fetched (redirects re-checked).
+- **Strict Metadata Tagging.** Every chunk is stored with `document_type: auto_sourced_literature`, `source_api` (`crossref` or `pubmed`), `paper_title` and `year` (plus `doi` and `license`). `process_document` refuses to create such chunks without them, and the extra fields cannot override core ones. The type is not accepted by the manual `ingest_*` CLIs, so public papers cannot be mislabelled as, or mixed with, internal data (`trial_data`, `patent`, ...).
+- **Cost control.** `--limit` defaults to 3 (hard maximum 20), and the script lists every paper and asks "Found X open-access papers. Proceed? (y/n)" before anything is downloaded or embedded. Papers already ingested are remembered in `backend/temp_literature/manifest.json` and skipped on later runs. Downloaded PDFs are deleted after ingestion (only the vectors are kept). `temp_literature/` is git- and docker-ignored.
+- **The AI_CAO treats these differently.** Retrieved public papers are labelled "PUBLIC LITERATURE, not Century Aqua data" in the prompt and "public literature" in the sources note. The AI_CAO must cite them by title and year, never present them as Century Aqua's results, and never use them as evidence about the SND Probiotic or the Sea Tilapia Strain.
+
+Limits: relevance is a keyword match, not a quality filter, so the papers should be reviewed (the preview lists titles and years). Open-access papers still carry copyright and attribution terms: CC BY requires crediting the authors, which the title/year tags and the manifest support. Optional env var `CONTACT_EMAIL` is sent to Crossref/NCBI as a courtesy contact for higher rate limits.
+
 ### Tests
-`venv\Scripts\python.exe -m unittest tests.test_rag -v` runs the mock tests (standard library only). They use fakes for OpenAI, Pinecone and Anthropic and make no network calls.
+`venv\Scripts\python.exe -m unittest discover -s tests -t . -v` runs all the mock tests (standard library only). They use fakes for OpenAI, Pinecone and Anthropic and make no network calls.
 
 ### Open items
 - **Never run against real services yet.** Retrieval quality, chunk sizes and the 20 s timeout are untested with real data.

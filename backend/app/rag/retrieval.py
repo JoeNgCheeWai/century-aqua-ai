@@ -20,6 +20,7 @@ from app.rag.vector_db import query_vectors
 
 logger = logging.getLogger(__name__)
 
+PUBLIC_LITERATURE_TYPE = "auto_sourced_literature"  # = document_processor.AUTO_SOURCED_TYPE
 DEFAULT_TOP_K = 5
 RAG_TIMEOUT_SECONDS = 20.0  # embedding + vector search budget
 
@@ -33,6 +34,9 @@ class RetrievedSource:
     page_number: int | None
     section_heading: str
     score: float
+    # Set only for auto-sourced public literature (document_type "auto_sourced_literature").
+    paper_title: str = ""
+    year: int | None = None
 
 
 @dataclass
@@ -64,7 +68,19 @@ def _format_matches(matches: list[dict[str, Any]]) -> RetrievalResult:
         page_number = int(page) if isinstance(page, (int, float)) else None
         score = float(match.get("score", 0.0))
 
-        parts = [f"[{label}] {source_file}", f"type: {document_type}"]
+        paper_title = ""
+        year: int | None = None
+        if document_type == PUBLIC_LITERATURE_TYPE:
+            paper_title = str(metadata.get("paper_title", "") or "")
+            raw_year = metadata.get("year")
+            year = int(raw_year) if isinstance(raw_year, (int, float)) else None
+            when = f" ({year})" if year else ""
+            parts = [
+                f"[{label}] PUBLIC LITERATURE, not Century Aqua data",
+                f"{paper_title or source_file}{when}",
+            ]
+        else:
+            parts = [f"[{label}] {source_file}", f"type: {document_type}"]
         if page_number is not None:
             parts.append(f"page {page_number}")
         if heading:
@@ -72,7 +88,9 @@ def _format_matches(matches: list[dict[str, Any]]) -> RetrievalResult:
         parts.append(f"relevance {score:.2f}")
         blocks.append(" | ".join(parts) + "\n" + text)
         sources.append(
-            RetrievedSource(source_file, document_type, page_number, heading, score)
+            RetrievedSource(
+                source_file, document_type, page_number, heading, score, paper_title, year
+            )
         )
     return RetrievalResult(context="\n\n".join(blocks), sources=sources)
 
@@ -88,9 +106,14 @@ def format_sources_note(sources: list[RetrievedSource]) -> str:
         return ""
     grouped: dict[str, dict[str, Any]] = {}
     for source in sources:
-        entry = grouped.setdefault(
-            source.source_file, {"type": source.document_type, "pages": set()}
-        )
+        if source.document_type == PUBLIC_LITERATURE_TYPE:
+            when = f" ({source.year})" if source.year else ""
+            name = f"{source.paper_title or source.source_file}{when}"
+            label = "public literature"
+        else:
+            name = source.source_file
+            label = source.document_type
+        entry = grouped.setdefault(name, {"type": label, "pages": set()})
         if source.page_number is not None:
             entry["pages"].add(source.page_number)
 
