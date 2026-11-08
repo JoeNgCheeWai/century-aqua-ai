@@ -12,12 +12,16 @@ print("ALLOWED_ORIGINS RAW:", repr(os.getenv("ALLOWED_ORIGINS")))
 print("ALLOWED_ORIGIN_REGEX RAW:", repr(os.getenv("ALLOWED_ORIGIN_REGEX")))
 print("="*40)
 
-from fastapi import FastAPI, HTTPException
+import secrets
+from typing import Literal
+
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.agents.gatekeeper import is_aquaculture_related
 from app.agents.dr_aqua import get_aquaculture_answer
+from app.agents.cao_agent import get_cao_answer
 
 app = FastAPI(title="Century Aquaculture Intelligence Platform (CAIP)")
 
@@ -98,5 +102,59 @@ async def chat(request: ChatRequest):
         traceback.print_exc()
         raise HTTPException(
             status_code=502, detail=f"Dr. Aqua specialist unavailable: {exc}"
+        ) from exc
+
+
+# --- AI_CAO (Tier 2): INTERNAL ONLY, backend-only endpoint ---
+# Never public and never reached from /api/chat or the Gatekeeper. Protected by
+# the X-Internal-CAO-Key header (INTERNAL_CAO_KEY env var).
+class CAOMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class CAORequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    history: list[CAOMessage] = Field(default_factory=list)
+
+
+class CAOResponse(BaseModel):
+    reply: str
+
+
+def _require_internal_key(provided: str | None) -> None:
+    """Fail closed: the endpoint is disabled unless INTERNAL_CAO_KEY is configured."""
+    expected = os.getenv("INTERNAL_CAO_KEY", "")
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="AI_CAO endpoint is disabled: INTERNAL_CAO_KEY is not configured.",
+        )
+    if not provided or not secrets.compare_digest(
+        provided.encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing X-Internal-CAO-Key header."
+        )
+
+
+@app.post("/api/cao", response_model=CAOResponse)
+async def cao(
+    request: CAORequest,
+    x_internal_cao_key: str | None = Header(default=None),
+):
+    # The key is checked before anything else, so unauthenticated callers can
+    # never trigger a model call.
+    _require_internal_key(x_internal_cao_key)
+
+    try:
+        history_dicts = [{"role": m.role, "content": m.content} for m in request.history]
+        reply = await get_cao_answer(request.message, history_dicts)
+        return CAOResponse(reply=reply)
+    except Exception as exc:
+        # Do not log message content: enterprise queries may be sensitive.
+        print(f"ERROR IN AI_CAO: {type(exc).__name__}: {exc}")
+        raise HTTPException(
+            status_code=502, detail=f"AI_CAO unavailable: {type(exc).__name__}"
         ) from exc
     

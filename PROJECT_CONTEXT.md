@@ -3,6 +3,13 @@
 ## 1. Project Overview
 Century Aqua AI is a multi-agent AI platform for the aquaculture industry. It features a "Gatekeeper" agent for routing and a "Specialist" agent (Dr. Aqua) for expert, neutral aquaculture advice. The platform includes a Next.js frontend with a dark "bio-tech" UI and a FastAPI backend.
 
+### Corporate Structure & Mission (Company DNA)
+- **Century Aquaculture Pte Ltd (Parent):** Main focus is the aquaculture farming business. Mission: advise on sustainable farming, enhance farming protocols, improve overall survival rates, and bring tangible benefits to the farming community.
+- **Century Aquacorp Pte Ltd (Subsidiary):** Main focus is fish health (vaccines, diagnostics, probiotics), which directly supports the parent company's farming protocols.
+- **Flagship IP:** The company's crown jewel is the **World's 1st Commercial Sea Tilapia Strain**.
+- **Instruction to AI_CAO:** When formulating B2B strategies, government policies, or internal operational plans, always consider how to protect, promote, and leverage the Sea Tilapia Strain and the company's sustainable farming protocols. This is encoded in `CAO_SYSTEM_PROMPT` ("COMPANY DNA" section).
+
+
 ## 2. Tech Stack
 - **Frontend:** Next.js (App Router), React, Tailwind CSS.
 - **Backend:** Python, FastAPI, Uvicorn.
@@ -12,8 +19,10 @@ Century Aqua AI is a multi-agent AI platform for the aquaculture industry. It fe
 ## 3. Directory Structure
 - `frontend/src/app/page.tsx`: Main frontend file containing Navbar, Hero, Products, ProductModal, and ChatWidget.
 - `backend/app/main.py`: FastAPI entry point, CORS setup, and `/api/chat` endpoint.
-- `backend/app/agents/gatekeeper.py`: Route filtering agent.
-- `backend/app/agents/dr_aqua.py`: Expert aquaculture agent.
+- `backend/app/agents/gatekeeper.py`: Route filtering agent for the PUBLIC chat only (aquaculture or not). It never routes to the AI_CAO.
+- `backend/app/agents/cao_agent.py`: AI_CAO agent (Tier 2, internal only), `get_cao_answer`. Served only by the internal `/api/cao` endpoint.
+- `backend/app/agents/dr_aqua.py`: Expert aquaculture agent (Tier 1).
+- `backend/app/prompts/cao_prompt.py`: Master system prompt (`CAO_SYSTEM_PROMPT`) for the AI_CAO executive agent (Tier 2). Used by `cao_agent.py` (see Section 7).
 - `frontend/public/images/products/`: Directory for product images.
 
 ## 4. CRITICAL RULES (DO NOT BREAK)
@@ -21,6 +30,7 @@ Century Aqua AI is a multi-agent AI platform for the aquaculture industry. It fe
 ### AI Model Constraints
 - **Gatekeeper Model:** MUST use `claude-haiku-5-5`.
 - **Dr. Aqua Model:** MUST use `claude-sonnet-5-5`.
+- **AI_CAO Model:** Same tier as Dr. Aqua (`claude-sonnet-5-5`) for now, set through its own `CAO_MODEL` env var so it can be scaled independently. `CAO_MAX_TOKENS` defaults to 4096.
 - *Never* revert to deprecated 2024 models (e.g., claude-3-haiku-20240307, claude-3-5-sonnet-20241022).
 
 ### Dr. Aqua Persona & Tone
@@ -50,7 +60,7 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
 - [x] "Expert Services" section below Products (Farm Consulting, Hatchery Setup, Health Diagnostics, AI Intelligence), 4-column grid on large screens; Navbar Services dropdown links to `#services`.
 - [x] Scroll animations: lightweight fade-in/slide-up via the `Reveal` component (IntersectionObserver, runs once, respects reduced-motion) on Products and Services.
 - [x] Deployment configuration: `backend/Dockerfile`, `render.yaml` (Render), `frontend/vercel.json` (Vercel), `.env.example` files, pinned `backend/requirements.txt`.
-  - Backend env vars: `ANTHROPIC_API_KEY`, `GATEKEEPER_MODEL`, `SPECIALIST_MODEL`, `ALLOWED_ORIGINS`, optional `ALLOWED_ORIGIN_REGEX` (Vercel previews).
+  - Backend env vars: `ANTHROPIC_API_KEY`, `GATEKEEPER_MODEL`, `SPECIALIST_MODEL`, `ALLOWED_ORIGINS`, optional `ALLOWED_ORIGIN_REGEX` (Vercel previews), and for AI_CAO: `INTERNAL_CAO_KEY` (secret, required to enable `/api/cao`), `CAO_MODEL`, `CAO_MAX_TOKENS`.
   - Frontend env var: `BACKEND_URL` (Render backend base URL, no trailing slash; used at build time by the `/api/*` rewrite in `next.config.ts`). The browser calls `/api/chat` on the Vercel domain and Vercel proxies it to Render, so CORS is bypassed in production. Redeploy Vercel after changing it.
   - Security: API-key debug print removed from `main.py`; never commit `backend/.env`.
 - [x] Product card images use local files for reliability: SND Probiotic uses `/images/products/snd-probiotic-product.jpg`; RAS Systems uses `/images/products/ras.jpg` (alt text: "Recirculating aquaculture tank with bio-filtration unit and monitoring display"). Avoid unverified stock photos; check that an image actually matches the product before using it.
@@ -62,3 +72,45 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
 - [ ] Optimization pass: migrate `<img>` tags to `next/image` (clears 2 `no-img-element` lint warnings).
 - [x] Hero video at `frontend/public/videos/hero.mp4` (fixed: file was misnamed `hero.mp4.mp4`; must be committed and redeployed).
 - [ ] Optional: run a local Docker build test of `backend/Dockerfile` (not yet run; Render builds it in the cloud).
+- [x] AI_CAO (Tier 2) wired into the backend: `cao_agent.py` and the internal-only `/api/cao` endpoint (header `X-Internal-CAO-Key`). Public Gatekeeper and frontend untouched. Needs a live end-to-end test after `INTERNAL_CAO_KEY` is set.
+- [ ] AI_CAO internal access: no UI exists by design. Decide how internal users will reach it (script, Postman, or a separate internal tool).
+
+## 7. Tier 2: AI Executive Agents
+
+The platform has two agent tiers. **Tier 1** is tactical and farmer-facing (Dr. Aqua, Section 4), and is the only agent the public can reach. **Tier 2** is strategic, **internal-facing and enterprise-only**: AI executive agents that support Century Aquaculture Pte Ltd and Century Aquacorp Pte Ltd internal processes, and provide high-level B2B consultancy for global animal health corporations and government agencies. **Tier 2 is NEVER public.**
+
+### AI_CAO (Chief Aquaculture Officer)
+- **Status:** Wired into the backend as an internal-only service. Prompt in `backend/app/prompts/cao_prompt.py` (`CAO_SYSTEM_PROMPT`), agent in `backend/app/agents/cao_agent.py`, endpoint `POST /api/cao`. No frontend entry point and no routing from the public Gatekeeper or `/api/chat`.
+- **Known exposure:** The Vercel rewrite is `/api/:path*`, so `/api/cao` is technically reachable through the public Vercel domain and the public Render URL. The `X-Internal-CAO-Key` check is the only barrier. Narrowing the rewrite to `/api/chat` and `/api/health` is a recommended frontend change that has not been made (deliberately, to leave the frontend untouched).
+- **Identity:** A CEO-level strategic executive for global aquaculture and animal health. It is not a Q&A bot; it thinks and communicates like the chief executive of a global aquaculture producer or animal health company.
+- **Tone:** Boardroom-ready, authoritative, and visionary, grounded in evidence. Leads with the recommendation, then reasoning, risks, and next steps. No marketing or hype.
+- **Domain Mastery:** RAS, open ponds, sea cages, aquaponics (and biofloc), advanced genetics and broodstock, alternative feeds, and global environmental policy.
+- **B2B Market Intelligence:** Guides major companies on vaccine pipelines, next-generation species focus, and market intelligence. Labels what is established, emerging, or speculative.
+- **Economics & Trade:** CAPEX/OPEX modeling, ROI/NPV/IRR, global export standards (ASC/BAP), and supply chain traceability.
+- **Synthesis requirement:** Combines biological data, macroeconomics, and global trade dynamics in its answers.
+- **Drafting capability:** High-level policy briefs for government agencies and strategic roadmaps for corporate boards.
+
+### Distinction from Dr. Aqua
+| | Dr. Aqua (Tier 1) | AI_CAO (Tier 2) |
+|---|---|---|
+| Role | Tactical specialist | Strategic visionary |
+| Audience | Farmers, farm and hatchery operators | Enterprises, boards, investors, government agencies |
+| Focus | Day-to-day farm management | Strategy, economics, trade, policy |
+| Style | Concise, neutral, under 300 words | Executive-level, as long as the decision requires |
+
+### AI_CAO rules (DO NOT BREAK)
+- **SND Probiotic:** Rely strictly on objective science and the NUS trial data in Section 4; the prompt repeats those facts exactly. Do not add or extend claims. When the AI_CAO mentions SND Probiotic it discloses that Century Aqua is the developer, presents the growout trials as current and preliminary, limits conclusions to the tested scope (sea tilapia, the stated systems and biomass), and does not invent yield, FCR, survival, cost, ROI, or payback figures for it.
+- **Financial figures:** Must be labeled as sourced data, an industry range, or an illustrative assumption. Never presented as fact.
+- **No fabrication:** Never invent statistics, studies, regulations, or certification criteria. Flag items that need verification against current official sources.
+- **Company alignment (replaces the earlier strict-neutrality rule):** The AI_CAO advocates for Century Aqua's strategic interests, especially the Sea Tilapia Strain and the sustainable farming protocols, but never at the expense of accuracy. It must not invent data about the strain or Century Aquacorp products, must disclose Century Aqua's interest in policy or external advice, must stand policy proposals on public-interest grounds, must not claim superiority over competitors, and must say so plainly when the best option does not involve Century Aqua.
+- **Consistency:** If the SND facts in Section 4 change, update `dr_aqua.py` and `cao_prompt.py` together.
+
+### Wiring decisions (resolved)
+- **No public routing:** The Gatekeeper stays strictly for Dr. Aqua (public farming queries). It was deliberately NOT upgraded to a triage router, and `/api/chat` never reaches the CAO.
+- **Separate secure endpoint:** `POST /api/cao` is independent of the public chat. It requires an `X-Internal-CAO-Key` header matching the `INTERNAL_CAO_KEY` env var, checked before any model call so unauthenticated callers cannot burn tokens. If the variable is unset the endpoint returns 503 (fails closed). The endpoint does no triage: every authenticated request goes to the CAO.
+- **Model and length:** `CAO_MODEL` (default `claude-sonnet-5-5`) and `CAO_MAX_TOKENS` (default 4096).
+
+### Remaining open items
+- **Internal access method:** how staff and enterprise clients will actually call `/api/cao` (script, Postman, or a separate internal tool).
+- **Per-client keys and usage tracking:** one shared key is in use. Consider per-client keys, rate limits, and spend monitoring before external consultancy use.
+- **Data handling:** enterprise queries may be confidential. Message content is not logged by the endpoint, but confirm the policy before client use.

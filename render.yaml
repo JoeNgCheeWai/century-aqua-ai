@@ -14,6 +14,12 @@ services:
         value: claude-haiku-5-5
       - key: SPECIALIST_MODEL
         value: claude-sonnet-5-5
+      - key: CAO_MODEL
+        value: claude-sonnet-5-5
+      - key: CAO_MAX_TOKENS
+        value: "4096"
+      - key: INTERNAL_CAO_KEY
+        sync: false          # secret; required to enable the internal-only /api/cao endpoint
       - key: ALLOWED_ORIGINS
         sync: false          # your Vercel production URL(s), comma-separated
       - key: ALLOWED_ORIGIN_REGEX
