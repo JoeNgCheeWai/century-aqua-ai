@@ -15,6 +15,7 @@ Century Aqua AI is a multi-agent AI platform for the aquaculture industry. It fe
 - **Backend:** Python, FastAPI, Uvicorn.
 - **AI API:** Anthropic API (using the `anthropic` Python SDK).
 - **RAG (AI_CAO only):** Pinecone vector DB, OpenAI `text-embedding-3-small` embeddings, PyMuPDF/pdfplumber for PDFs (see Section 8).
+- **Accounts & usage (frontend):** Clerk (`@clerk/nextjs`) for sign-in, Prisma 7 + PostgreSQL (`@prisma/adapter-pg`) for users and message counts (see Section 9).
 - **Styling:** Tailwind CSS with custom colors: Primary `#00C9A7` (Teal), Background `#0A2342` (Dark Navy).
 
 ## 3. Directory Structure
@@ -27,6 +28,10 @@ Century Aqua AI is a multi-agent AI platform for the aquaculture industry. It fe
 - `backend/app/rag/`: RAG pipeline for the AI_CAO only: `document_processor.py`, `embeddings.py`, `vector_db.py`, `retrieval.py`, `ingestion.py` (see Section 8).
 - `backend/scripts/`: CLI tools `ingest_document.py` and `ingest_directory.py` (run locally; not part of the Docker image).
 - `backend/tests/test_rag.py`: Mock tests for the RAG pipeline (no real API calls).
+- `frontend/src/app/dashboard/`: Subscriber Dashboard (`page.tsx` server loader, `DashboardShell`, `Sidebar`, `ChatArea`, `UsageBadge`, `useChat`, `mock-data.ts`). See Section 9.
+- `frontend/src/app/api/chat/route.ts`: Rate-limited `/api/chat` route handler (sits in front of the FastAPI backend).
+- `frontend/src/app/sign-in/`, `sign-up/`: Clerk `<SignIn />` / `<SignUp />` pages. `frontend/src/proxy.ts`: Clerk proxy (Next.js 16 name for middleware).
+- `frontend/src/lib/`: `plans.ts` (limits), `usage.ts` (metering), `prisma.ts` (client), `clerk-config.ts`, `clerk-appearance.ts`. `frontend/prisma/`: schema and migrations.
 - `frontend/public/images/products/`: Directory for product images.
 
 ## 4. CRITICAL RULES (DO NOT BREAK)
@@ -79,6 +84,9 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
 - [x] AI_CAO (Tier 2) wired into the backend: `cao_agent.py` and the internal-only `/api/cao` endpoint (header `X-Internal-CAO-Key`). Public Gatekeeper and frontend untouched. Needs a live end-to-end test after `INTERNAL_CAO_KEY` is set.
 - [x] RAG pipeline code for the AI_CAO built and mock-tested (Section 8). Not yet run against real Pinecone/OpenAI.
 - [ ] RAG go-live: create the Pinecone index (dimension 1536, cosine), set `PINECONE_API_KEY`, `PINECONE_INDEX`, `OPENAI_API_KEY` locally and in Render, ingest the NUS trial data, then test `/api/cao` with real questions.
+- [x] Phase 1 SaaS foundation built and tested locally (Section 9): Clerk auth, Prisma `User` table, rate limit on `/api/chat`, Subscriber Dashboard skeleton, "Talk to CAIP" now opens `/dashboard`. NOT deployed.
+- [ ] SaaS go-live: create the Clerk app and a Neon/Supabase database; set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `DATABASE_URL` locally and in Vercel; run `npx prisma migrate deploy` against the production database; test sign-in and the dashboard with real Clerk keys (not yet done); then deploy.
+- [ ] SaaS gaps: no way to upgrade a user's plan yet (set `role` by hand in Prisma Studio); anonymous visitors are not rate-limited; `tokenBalance` is stored but never spent; dashboard Projects, Document Library, Settings and chat history are mock/"Soon".
 - [ ] AI_CAO internal access: no UI exists by design. Decide how internal users will reach it (script, Postman, or a separate internal tool).
 
 ## 7. Tier 2: AI Executive Agents
@@ -87,7 +95,7 @@ The platform has two agent tiers. **Tier 1** is tactical and farmer-facing (Dr. 
 
 ### AI_CAO (Chief Aquaculture Officer)
 - **Status:** Wired into the backend as an internal-only service. Prompt in `backend/app/prompts/cao_prompt.py` (`CAO_SYSTEM_PROMPT`), agent in `backend/app/agents/cao_agent.py`, endpoint `POST /api/cao`. No frontend entry point and no routing from the public Gatekeeper or `/api/chat`.
-- **Known exposure:** The Vercel rewrite is `/api/:path*`, so `/api/cao` is technically reachable through the public Vercel domain and the public Render URL. The `X-Internal-CAO-Key` check is the only barrier. Narrowing the rewrite to `/api/chat` and `/api/health` is a recommended frontend change that has not been made (deliberately, to leave the frontend untouched).
+- **Exposure:** Through the Vercel domain `/api/cao` is NOT reachable: `next.config.ts` now proxies only `/api/health`, and `/api/chat` is a route handler (Section 9). The public Render URL still answers `/api/cao`, so the `X-Internal-CAO-Key` check remains the only barrier there.
 - **Identity:** A CEO-level strategic executive for global aquaculture and animal health. It is not a Q&A bot; it thinks and communicates like the chief executive of a global aquaculture producer or animal health company.
 - **Tone:** Boardroom-ready, authoritative, and visionary, grounded in evidence. Leads with the recommendation, then reasoning, risks, and next steps. No marketing or hype.
 - **Domain Mastery:** RAS, open ponds, sea cages, aquaponics (and biofloc), advanced genetics and broodstock, alternative feeds, and global environmental policy.
@@ -182,3 +190,33 @@ Limits: relevance is a keyword match, not a quality filter, so the papers should
 - **No deletion tool:** removing or replacing a document in the index is manual (Pinecone console or API).
 - **Render memory:** the PDF libraries add heavy packages to the image (including numpy and onnxruntime). The running server never imports them, but check Render's free-tier memory and build size after deploy. Splitting the ingestion dependencies into a separate requirements file is an option.
 - **Cost:** each AI_CAO question now makes one embedding call plus a larger prompt (up to five excerpts).
+
+## 9. Accounts, Plans and Rate Limiting (Subscriber Dashboard)
+
+Status: built and tested locally; **not deployed**. Lives entirely in `frontend/` (Next.js). The FastAPI backend is unchanged.
+
+### Auth (Clerk)
+- `@clerk/nextjs` v7. `frontend/src/proxy.ts` (`clerkMiddleware`) makes `auth()` available. Pages protect themselves: `/dashboard` calls `redirect("/sign-in")` when signed out, which is Clerk's recommended pattern over blocking in the proxy. `/sign-in` and `/sign-up` render `<SignIn />` and `<SignUp />`, themed with the site colors, wrapped in `<Suspense>` (required by Cache Components).
+- Env vars: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`.
+- **Setting the keys:** run `node scripts/setup_clerk.js` from `frontend/` instead of editing `.env` by hand. It asks for both keys (visible input, so pasting works), validates them (`pk_test_`/`pk_live_` and `sk_test_`/`sk_live_`, longer than 20 characters, no placeholders), removes any existing `NEXT_PUBLIC_CLERK_*` / `CLERK_SECRET_KEY*` lines, appends the new ones, keeps every other line, and saves the old file as `.env.bak` (git-ignored). Nothing is written unless both keys are valid. Tests: `node --test scripts/setup_clerk.test.js`. Restart `npm run dev` afterwards.
+- **Degrades safely without keys** (`src/lib/clerk-config.ts`): Clerk throws on every request when its keys are missing, which would take the whole public site down. So without keys the proxy and provider step aside; the homepage, anonymous chat and `/api/health` keep working, and `/dashboard`, `/sign-in`, `/sign-up` show a "Sign-in isn't set up yet" notice.
+
+### Database (Prisma 7 + PostgreSQL)
+- `frontend/prisma/schema.prisma`: enum `Role` (`free`, `pro`, `research`, `enterprise`, `internal`) and model `User` (`clerkId` unique link to Clerk, `role`, `messageCount`, `sessionResetTime`, `tokenBalance`, timestamps). Client generated to `src/generated/prisma` (git-ignored), created by `postinstall` (`prisma generate`, works without a database).
+- Config in `frontend/prisma7.config.ts`; connection string `DATABASE_URL`. Prisma 7 uses the `@prisma/adapter-pg` driver adapter. Migrations are committed in `frontend/prisma/migrations`; apply to production with `npm run db:deploy`.
+- Local dev database: `npx prisma dev --detach --name caip-local` (stop with `npx prisma dev stop caip-local`), then use its `postgres://` TCP URL in `frontend/.env`. Production target: Neon (pooled URL) or Supabase.
+- A user row is created on first dashboard visit or chat, as `free`. **Roles are not synced from Clerk and nothing upgrades them yet**: change `role` by hand (`npx prisma studio`).
+
+### Rate limiting (`/api/chat`)
+- `frontend/src/app/api/chat/route.ts` is now a route handler that checks the limit, then forwards to the FastAPI `/api/chat` (`BACKEND_URL`, 60 s timeout). `next.config.ts` no longer proxies `/api/chat` or `/api/cao`; only `/api/health`.
+- Limits (`src/lib/plans.ts`, adjust there): **free** 10 messages per 4 hours; **pro / research / enterprise** 100 per 2 hours; **internal** unlimited. A window starts at the first message after the previous one ended; `sessionResetTime` is when it ends and the count then restarts at 0.
+- Over the limit: HTTP 429 `{"error":"RATE_LIMIT_EXCEEDED","resetTime":"<ISO time>"}` plus a `Retry-After` header. The message is not counted and the dashboard puts it back in the input box.
+- Counting is one conditional SQL `UPDATE ... WHERE messageCount < limit`, so parallel requests cannot exceed the limit. If the backend fails the message is refunded. If the usage check itself fails, the route returns 503 (fails closed).
+- **Anonymous visitors are NOT metered** (no identity to meter) and are forwarded unchanged. Add an IP-based limit before relying on the public widget for cost control.
+
+### Dashboard (`/dashboard`)
+- Sidebar: New Chat, Projects, Document Library, Settings (these three are "Soon" placeholders), sample recent chats (mock), the **Messages Remaining: X/N badge (real database value)**, and Clerk's `UserButton`. Main area: welcome message, suggested questions, real chat through `/api/chat`, and a clear notice when the limit is hit. Mobile: the sidebar becomes a drawer.
+- If the database is unreachable the dashboard still opens and the badge says "unavailable".
+
+### Tests
+- No automated frontend tests yet. Verified with throw-away scripts against a real local Postgres (limits, windows, 25 parallel requests, roles, refunds) and the real route handler with Clerk stubbed. Not verified: a real Clerk sign-in, or a multi-connection concurrency run.

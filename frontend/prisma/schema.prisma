@@ -1,0 +1,39 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Subscription tier. Free users get the small limit; pro/research/enterprise
+// share the paid limit; internal staff are unmetered (see src/lib/rate-limit.ts).
+enum Role {
+  free
+  pro
+  research
+  enterprise
+  internal
+}
+
+// One row per Clerk user, created lazily on their first dashboard visit or chat.
+model User {
+  id               String   @id @default(cuid())
+  // Clerk's userId (e.g. "user_2abc..."). The link between Clerk and this database.
+  clerkId          String   @unique
+  role             Role     @default(free)
+  // Messages used in the current session window.
+  messageCount     Int      @default(0)
+  // When the current window ends; the count resets to 0 after this moment.
+  sessionResetTime DateTime
+  // Purchased top-up credits (not spent by the rate limiter yet).
+  tokenBalance     Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}

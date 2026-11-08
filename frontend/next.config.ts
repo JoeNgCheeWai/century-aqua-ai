@@ -8,13 +8,15 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
-  // Proxy /api/* to the FastAPI backend so the browser makes same-origin
-  // requests (no CORS preflight).
+  // Same-origin proxy to the FastAPI backend (no CORS preflight). ONLY the
+  // health check goes straight through. /api/chat is handled by the rate-limited
+  // route handler in src/app/api/chat/route.ts, and the internal-only /api/cao
+  // is deliberately NOT proxied, so it is not reachable through this site.
   async rewrites() {
     return [
       {
-        source: "/api/:path*",
-        destination: `${BACKEND_URL.replace(/\/+$/, "")}/api/:path*`,
+        source: "/api/health",
+        destination: `${BACKEND_URL.replace(/\/+$/, "")}/api/health`,
       },
     ];
   },

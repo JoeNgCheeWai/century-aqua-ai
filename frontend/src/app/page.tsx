@@ -113,7 +113,8 @@ function Hero() {
           <a href="#products" className="rounded-full bg-[#00C9A7] px-8 py-3 font-medium text-[#0A2342] shadow-[0_0_30px_rgba(0,201,167,0.4)] transition hover:brightness-110">
             Explore Products
           </a>
-          <a href="#chat" className="rounded-full border border-white/30 px-8 py-3 font-medium text-white transition hover:border-[#00C9A7] hover:text-[#00C9A7]">
+          {/* Goes to the dashboard; signed-out visitors are sent on to Clerk's sign-in. */}
+          <a href="/dashboard" className="rounded-full border border-white/30 px-8 py-3 font-medium text-white transition hover:border-[#00C9A7] hover:text-[#00C9A7]">
             Talk to CAIP
           </a>
         </div>
@@ -306,6 +307,11 @@ function ChatWidget() {
         }),
       });
 
+      if (response.status === 429) {
+        // Signed-in users who hit their plan limit (anonymous visitors are not metered yet).
+        setMessages((prev) => [...prev, { role: "ai", text: "You've reached your message limit for this session. Open the dashboard to see when it resets." }]);
+        return;
+      }
       if (!response.ok) throw new Error(`Backend error: ${response.status}`);
       const data = await response.json();
       setMessages((prev) => [...prev, { role: "ai", text: data.reply }]);

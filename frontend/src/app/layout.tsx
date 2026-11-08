@@ -1,4 +1,7 @@
 import type { Metadata } from "next";
+import { ClerkProvider } from "@clerk/nextjs";
+import { clerkAppearance } from "@/lib/clerk-appearance";
+import { clerkConfigured } from "@/lib/clerk-config";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,7 +20,19 @@ export default function RootLayout({
           fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
         }}
       >
-        {children}
+        {clerkConfigured ? (
+          <ClerkProvider
+            appearance={clerkAppearance}
+            signInUrl="/sign-in"
+            signUpUrl="/sign-up"
+            signInFallbackRedirectUrl="/dashboard"
+            signUpFallbackRedirectUrl="/dashboard"
+          >
+            {children}
+          </ClerkProvider>
+        ) : (
+          children
+        )}
       </body>
     </html>
   );
