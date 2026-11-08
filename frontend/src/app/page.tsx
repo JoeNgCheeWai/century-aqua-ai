@@ -8,6 +8,16 @@ type Message = {
   text: string;
 };
 
+type Product = {
+  name: string;
+  tag: string;
+  desc: string;
+  hasDetails?: boolean;
+  image?: string;
+  imageAlt?: string;
+  imagePosition?: string;
+};
+
 // --- Data ---
 const NAV = [
   { label: "About", items: ["Our Story", "Leadership", "Sustainability", "Careers"] },
@@ -16,11 +26,11 @@ const NAV = [
   { label: "Services", href: "#services", items: ["Farm Consulting", "Hatchery Setup", "Health Diagnostics", "AI Intelligence"] },
 ];
 
-const PRODUCTS = [
+const PRODUCTS: Product[] = [
   { name: "Premium Feed Supplement", tag: "Nutrition", desc: "High-conversion nutritional supplements for fin fish and shrimp." },
-  { name: "SND Probiotic", tag: "Water Treatment", desc: "Single-product solution eliminating ammonia, nitrite, and nitrate. Proven in RAS and high-density hatcheries.", hasDetails: true, image: "images/products/ras.jpg" },
+  { name: "SND Probiotic", tag: "Water Treatment", desc: "Single-product solution eliminating ammonia, nitrite, and nitrate. Proven in RAS and high-density hatcheries.", hasDetails: true, image: "/images/products/snd-probiotic-product.jpg", imageAlt: "SND Probiotic product pouch in front of laboratory bioreactors" },
   { name: "Semi-Automated Inoculation System", tag: "Automation", desc: "Precision dosing and automated culture inoculation for hatcheries." },
-  { name: "RAS Systems", tag: "Infrastructure", desc: "Recirculating systems engineered for maximum efficiency and biosecurity." },
+  { name: "RAS Systems", tag: "Infrastructure", desc: "Recirculating systems engineered for maximum efficiency and biosecurity.", image: "/images/products/ras.jpg", imageAlt: "Recirculating aquaculture tank with bio-filtration unit and monitoring display", imagePosition: "object-center" },
   { name: "Fish Vaccines", tag: "Health", desc: "Advanced immunization solutions for proactive disease prevention." },
   { name: "Health Diagnostics", tag: "Biosecurity", desc: "Rapid disease screening and prevention programs." },
 ];
@@ -144,7 +154,7 @@ function Products({ onProductClick }: { onProductClick: (name: string) => void }
             >
                  <div className="mb-5 h-40 overflow-hidden rounded-xl ring-1 ring-white/10 bg-[#0A2342]">
                   {p.image ? (
-                    <img src={p.image} alt={p.name} className="h-full w-full object-cover transition duration-500 group-hover:scale-105" />
+                    <img src={p.image} alt={p.imageAlt ?? p.name} className={`h-full w-full object-cover transition duration-500 group-hover:scale-105 ${p.imagePosition ?? ""}`} />
                   ) : (
                     <div className="h-full w-full bg-gradient-to-br from-[#00C9A7]/30 to-[#0A2342]" />
                   )}

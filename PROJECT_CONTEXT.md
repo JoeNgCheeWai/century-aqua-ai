@@ -53,10 +53,12 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
   - Backend env vars: `ANTHROPIC_API_KEY`, `GATEKEEPER_MODEL`, `SPECIALIST_MODEL`, `ALLOWED_ORIGINS`, optional `ALLOWED_ORIGIN_REGEX` (Vercel previews).
   - Frontend env var: `BACKEND_URL` (Render backend base URL, no trailing slash; used at build time by the `/api/*` rewrite in `next.config.ts`). The browser calls `/api/chat` on the Vercel domain and Vercel proxies it to Render, so CORS is bypassed in production. Redeploy Vercel after changing it.
   - Security: API-key debug print removed from `main.py`; never commit `backend/.env`.
+- [x] Product card images use local files for reliability: SND Probiotic uses `/images/products/snd-probiotic-product.jpg`; RAS Systems uses `/images/products/ras.jpg` (alt text: "Recirculating aquaculture tank with bio-filtration unit and monitoring display"). Avoid unverified stock photos; check that an image actually matches the product before using it.
+
 
 
 ## 6. Pending Tasks (For AI CTO)
-- [ ] **DEFERRED:** Generate and integrate images for remaining products (Premium Feed Supplement, Semi-Automated Inoculation System, Fish Vaccines, Health Diagnostics, RAS Systems). Teal gradient placeholders are used until real product photos are available.
+- [ ] **DEFERRED:** Generate and integrate images for remaining products (Premium Feed Supplement, Semi-Automated Inoculation System, Fish Vaccines, Health Diagnostics). Teal gradient placeholders are used until real product photos are available. (SND Probiotic and RAS Systems already have images; see Section 5.)
 - [ ] Optimization pass: migrate `<img>` tags to `next/image` (clears 2 `no-img-element` lint warnings).
 - [x] Hero video at `frontend/public/videos/hero.mp4` (fixed: file was misnamed `hero.mp4.mp4`; must be committed and redeployed).
 - [ ] Optional: run a local Docker build test of `backend/Dockerfile` (not yet run; Render builds it in the cloud).
