@@ -36,4 +36,93 @@ model User {
   tokenBalance     Int      @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+  // Set when an admin bans the user (soft delete). Banned users are refused everywhere.
+  bannedAt         DateTime?
+}
+
+// ---------- Internal Dashboard (/internal) and Command Centre (/admin) ----------
+// Every "userId" below is a Clerk user id (User.clerkId). agentType is 'dr_aqua' | 'cao'
+// and role is 'user' | 'assistant' | 'system'; both are plain strings checked in code.
+
+// One row per call to /api/chat or /api/cao, written in the background.
+model QueryLog {
+  id           Int      @id @default(autoincrement())
+  userId       String?
+  agentType    String
+  timestamp    DateTime @default(now())
+  success      Boolean
+  tokenCount   Int?
+  errorMessage String?
+  ipAddress    String?
+
+  @@index([timestamp])
+  @@index([userId, timestamp])
+  @@index([agentType, timestamp])
+}
+
+// A shared chat where several staff and one AI agent talk together.
+model MeetingRoom {
+  id           Int              @id @default(autoincrement())
+  name         String
+  createdBy    String
+  participants String[]         @default([])
+  agentType    String
+  createdAt    DateTime         @default(now())
+  messages     MeetingMessage[]
+
+  @@index([createdBy])
+}
+
+model MeetingMessage {
+  id        Int         @id @default(autoincrement())
+  roomId    Int
+  room      MeetingRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId    String? // null for AI and system messages
+  message   String
+  role      String
+  timestamp DateTime    @default(now())
+
+  @@index([roomId, timestamp])
+}
+
+model InternalProject {
+  id          Int            @id @default(autoincrement())
+  name        String
+  description String?
+  createdBy   String
+  members     String[]       @default([])
+  createdAt   DateTime       @default(now())
+  chats       InternalChat[]
+
+  @@index([createdBy])
+}
+
+// One row per message in a staff chat (separate from subscriber chats).
+model InternalChat {
+  id        Int              @id @default(autoincrement())
+  userId    String
+  projectId Int?
+  project   InternalProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  agentType String
+  message   String
+  role      String
+  timestamp DateTime         @default(now())
+
+  @@index([userId, timestamp])
+  @@index([projectId, timestamp])
+}
+
+// Who changed what, and when, for every admin action.
+model AdminAuditLog {
+  id         Int      @id @default(autoincrement())
+  actorId    String // Clerk user id of the admin, or 'cli' for scripts
+  action     String
+  targetType String?
+  targetId   String?
+  details    Json?
+  ipAddress  String?
+  timestamp  DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([actorId, timestamp])
 }

@@ -10,5 +10,10 @@ export default defineConfig({
   },
   datasource: {
     url: process.env["DATABASE_URL"],
+    // Only `prisma migrate dev` uses this (a scratch copy to replay migrations).
+    // Needed for the local `prisma dev` server, which would otherwise reuse your
+    // real database and fail with "type already exists". Leave it unset in
+    // production, where only `prisma migrate deploy` runs.
+    shadowDatabaseUrl: process.env["SHADOW_DATABASE_URL"] || undefined,
   },
 });

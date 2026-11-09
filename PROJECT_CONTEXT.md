@@ -86,6 +86,7 @@ When discussing water quality, ammonia, or sludge, Dr. Aqua must first provide c
 - [ ] RAG go-live: create the Pinecone index (dimension 1536, cosine), set `PINECONE_API_KEY`, `PINECONE_INDEX`, `OPENAI_API_KEY` locally and in Render, ingest the NUS trial data, then test `/api/cao` with real questions.
 - [x] Phase 1 SaaS foundation built and tested locally (Section 9): Clerk auth, Prisma `User` table, rate limit on `/api/chat`, Subscriber Dashboard skeleton, "Talk to CAIP" now opens `/dashboard`. NOT deployed.
 - [ ] SaaS go-live: create the Clerk app and a Neon/Supabase database; set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `DATABASE_URL` locally and in Vercel; run `npx prisma migrate deploy` against the production database; test sign-in and the dashboard with real Clerk keys (not yet done); then deploy.
+- [x] Staff areas Phase 1 (Section 10): `/internal` and `/admin` shells with proxy + layout access control and the new database tables. Phases 2 to 4 pending.
 - [ ] SaaS gaps: no way to upgrade a user's plan yet (set `role` by hand in Prisma Studio); anonymous visitors are not rate-limited; `tokenBalance` is stored but never spent; dashboard Projects, Document Library, Settings and chat history are mock/"Soon".
 - [ ] AI_CAO internal access: no UI exists by design. Decide how internal users will reach it (script, Postman, or a separate internal tool).
 
@@ -218,5 +219,40 @@ Status: built and tested locally; **not deployed**. Lives entirely in `frontend/
 - Sidebar: New Chat, Projects, Document Library, Settings (these three are "Soon" placeholders), sample recent chats (mock), the **Messages Remaining: X/N badge (real database value)**, and Clerk's `UserButton`. Main area: welcome message, suggested questions, real chat through `/api/chat`, and a clear notice when the limit is hit. Mobile: the sidebar becomes a drawer.
 - If the database is unreachable the dashboard still opens and the badge says "unavailable".
 
+## 10. Staff Areas: Internal Workspace (`/internal`) and Command Centre (`/admin`)
+
+Status: **Phase 1 of 4 built locally (foundation + access control + empty layouts). Not deployed, not committed.** Phases 2 to 4 are NOT built.
+
+### Access rule (DO NOT WEAKEN)
+Both areas are for staff only: the signed-in user's row in OUR database must have `role = 'internal'` and `bannedAt = null`. The role is read from the database on every request (never from a token), so promotions and demotions take effect immediately. Roles are NOT stored in Clerk (nothing syncs them). Two independent locks:
+1. **Proxy** (`src/proxy.ts` calling `src/lib/staff-gate.ts`): covers `/internal/*`, `/admin/*`, `/api/internal/*`, `/api/admin/*`. Signed out gets a redirect to `/sign-in?redirect_url=...` (pages) or 401 JSON (API). Signed in but not staff, or banned, gets a real **403** (plain text for pages, JSON for the API). If the database cannot be reached it returns **503** (fails closed, never access). Paths are normalised first, so `/ADMIN`, `//admin` and `/%61dmin` are treated as staff paths. Responses are `no-store`.
+2. **Layouts** (`src/app/internal/layout.tsx`, `src/app/admin/layout.tsx` using `src/lib/staff-guard.tsx`): nothing renders for non-staff even if the proxy were bypassed.
+- Checking access never creates a user row. If the Clerk keys are missing both areas answer 503.
+- **Making someone staff:** run `node scripts/promote_to_internal.js` from `frontend/` and type the account's email. The database stores no emails, so the script asks Clerk's API for the account behind that email, then sets `role = 'internal'` in one transaction and writes an `AdminAuditLog` line (actor `cli`). It creates the database row if the account never opened the app, refuses a banned account, and needs `CLERK_SECRET_KEY` and `DATABASE_URL` in `frontend/.env` plus a running database. Prisma Studio is NOT needed (it fails to load on the local dev server). Tests: `node --test scripts/promote_to_internal.test.js scripts/promote_to_internal.flow.test.js scripts/promote_to_internal.db.test.js` (the last one only runs against a localhost database).
+- **Local database name:** `frontend/.env` uses `/caip_local` at the end of `DATABASE_URL`. The local `prisma dev` server (PGlite) treats every database name as the same single database, so the name only matters for Prisma Studio and for real Postgres hosts. Do not point Prisma Studio at `template1`.
+- Every future `/api/internal/*` and `/api/admin/*` route handler must ALSO call `checkStaff()` itself (defense in depth) and write to `AdminAuditLog` for any change.
+
+### Database (migration `internal_admin_models`)
+`User.bannedAt` (soft delete) plus models `QueryLog`, `MeetingRoom`, `MeetingMessage`, `InternalProject`, `InternalChat` (as specified, with indexes and cascade rules) and `AdminAuditLog` (who changed what, when; added for the audit requirement). `agentType` is `'dr_aqua' | 'cao'` and message `role` is `'user' | 'assistant' | 'system'`, both plain strings checked in code. All user ids are Clerk ids (`User.clerkId`). The local dev server needs `SHADOW_DATABASE_URL` in `frontend/.env` for `prisma migrate dev` (see `.env.example`); never set it in production.
+
+### What exists (Phase 1)
+- Sidebar shell `src/components/staff/StaffShell.tsx`, navigation in `nav.ts`, honest placeholder `ComingSoon.tsx` (states what is planned and which phase; no fake numbers).
+- `/internal`: New Chat, Projects, Document Library, Meeting Rooms, Settings. `/admin`: Overview, Analytics, Users, RAG Management, System Health, Costs. All are placeholders.
+
+### Not built yet
+Phase 2: agent selector and internal chat, meeting rooms (2 s polling), internal projects, the `/api/internal/*` endpoints. Phase 3: query logging (`QueryLog` is empty, so analytics and costs have nothing to show), all `/api/admin/*` endpoints, the dashboards, user management, RAG panel, health checks, cost monitoring. Phase 4: real-time polish, CSV/PDF export, search and filters.
+
+### Decisions needed before Phase 2 and 3
+- **AI_CAO key:** the web app must call the backend `/api/cao` server-side with `INTERNAL_CAO_KEY`. That key must go in Vercel as a server-only variable (no `NEXT_PUBLIC_` prefix) and the browser must never see it.
+- **Admin backend endpoints:** the spec lists `/api/admin/*` endpoints on the FastAPI backend, but the data (users, query logs) is in the frontend's database. Plan: build them as Next.js route handlers next to the database, and call the Python backend only for Pinecone and ingestion.
+- **Costs:** the spec's formula uses Haiku pricing for everything, but Dr. Aqua and the AI_CAO use Sonnet. Prices must be confirmed and kept in one config file; estimates will be labelled as estimates.
+- **Ingestion from the web:** `auto_fetch_literature.py` takes minutes and runs on Render's small disk; a "run it from a button" feature needs a background-job design first.
+
 ### Tests
+- Verified with a throw-away script (deleted) against the real local Postgres: 53 checks on path matching (including encoded and upper-case evasion), the access decision for every role, banned users, strangers, immediate role changes, and the proxy responses (401, 403, redirect, 503). Also checked the built server with curl: signed-out requests get the redirect or 401 on every staff page and API path. NOT verified: a real signed-in staff session (no staff test account was used), so the rendered sidebar for a logged-in user has not been seen.
+
+### Local troubleshooting: site renders with no CSS (Windows)
+Symptom: pages return 200 but look unstyled (white background, plain left-aligned text) on `npm run dev`, while the deployed Vercel site is fine. Cause (diagnosed, not a code or config problem): Windows **Smart App Control** (or another Application Control policy) blocks Tailwind v4's unsigned native engine, `node_modules/@tailwindcss/oxide-win32-x64-msvc/*.node`. Node reports `ERR_DLOPEN_FAILED: An Application Control policy has blocked this file`; Tailwind then silently falls back to a WASI build that scans 0 files, so no utility classes (`flex`, `bg-[#0A2342]`, ...) are generated and only the tiny base stylesheet (about 5 KB instead of about 36 KB) is served. No error is shown anywhere. Check: Windows Security, App & browser control, Smart App Control; or Event Viewer, Applications and Services Logs, Microsoft, Windows, CodeIntegrity, Operational (events 3033/3077 naming `tailwindcss-oxide`). Fixes: turn Smart App Control off (it generally cannot be turned back on without reinstalling Windows), or develop inside WSL2 / a Linux container, or preview via the Vercel deployment. This project uses Tailwind v4 (`@import "tailwindcss"` in `globals.css`, the `@tailwindcss/turbopack` rule in `next.config.ts`); there is intentionally no `tailwind.config.*`, `postcss.config.*` or `autoprefixer`. A local `npm run build` can still "pass" while producing an unstyled stylesheet, so check the CSS size, not just the exit code. Delete `.next` after fixing, because the bad CSS is cached there.
+
+### Tests (subscriber dashboard)
 - No automated frontend tests yet. Verified with throw-away scripts against a real local Postgres (limits, windows, 25 parallel requests, roles, refunds) and the real route handler with Clerk stubbed. Not verified: a real Clerk sign-in, or a multi-connection concurrency run.
