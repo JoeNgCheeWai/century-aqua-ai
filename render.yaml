@@ -38,6 +38,10 @@ services:
         sync: false          # secret; required to enable the internal-only /api/cto endpoint (64-char hex)
       - key: INTERNAL_CMO_KEY
         sync: false          # secret; required to enable the internal-only /api/cmo endpoint (64-char hex)
+      - key: INTERNAL_COUNCIL_KEY
+        sync: false          # secret; required to enable the internal-only /api/council endpoints (64-char hex, different from the agent keys)
+      - key: COUNCIL_MODEL
+        value: claude-sonnet-5-5
       - key: GOVERNANCE_DATABASE_URL
         sync: false          # secret; the Neon URL. Enables the audit log, agent state and kill switch
       - key: PINECONE_API_KEY

@@ -32,6 +32,9 @@ CTO_KEY_HEADER = "X-Internal-CTO-Key"
 # And for the CMO (Phase 4): its own key, its own header.
 CMO_KEY_ENV = "INTERNAL_CMO_KEY"
 CMO_KEY_HEADER = "X-Internal-CMO-Key"
+# And for the Council Protocol (Phase 5): its own key, its own header. No agent key opens /api/council.
+COUNCIL_KEY_ENV = "INTERNAL_COUNCIL_KEY"
+COUNCIL_KEY_HEADER = "X-Internal-Council-Key"
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:@+\-]{1,100}$")
 
 
@@ -61,6 +64,11 @@ def require_cto_key(provided: str | None) -> None:
 def require_cmo_key(provided: str | None) -> None:
     """The CMO endpoint's gate: INTERNAL_CMO_KEY in the X-Internal-CMO-Key header. Fails closed (503) if unset."""
     require_internal_key(provided, CMO_KEY_ENV, CMO_KEY_HEADER)
+
+
+def require_council_key(provided: str | None) -> None:
+    """The council endpoints' gate: INTERNAL_COUNCIL_KEY in X-Internal-Council-Key. Fails closed (503) if unset."""
+    require_internal_key(provided, COUNCIL_KEY_ENV, COUNCIL_KEY_HEADER)
 
 
 def require_actor(value: str | None, header: str, *, required: bool) -> str:

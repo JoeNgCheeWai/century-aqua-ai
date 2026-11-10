@@ -24,6 +24,7 @@ from app.api.admin.agents.reset import router as reset_router
 from app.api.cao import router as cao_router
 from app.api.cmo import router as cmo_router
 from app.api.coo import router as coo_router
+from app.api.council import router as council_router
 from app.api.cross_check import router as cross_check_router
 from app.api.cto import router as cto_router
 
@@ -37,6 +38,8 @@ app.include_router(cao_router)
 app.include_router(coo_router)
 app.include_router(cto_router)
 app.include_router(cmo_router)
+# The AI Executive Council (Phase 5, POST/GET /api/council) has its own INTERNAL_COUNCIL_KEY.
+app.include_router(council_router)
 app.include_router(cross_check_router)
 app.include_router(reset_router)
 

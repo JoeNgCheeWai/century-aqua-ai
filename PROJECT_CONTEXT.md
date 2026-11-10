@@ -692,3 +692,120 @@ A mocked publishing request returns an `authorization_request` and NOT an execut
 - **No approval step exists in the product** (as for the CTO). Approval is a manual, off-system act. `authorizationRequest.status` always reads `pending_human_approval`, so "pending" is `humanAction = 'Pending'` on a row with a non-null `authorizationRequest`, not the JSON status.
 - Answers are long and slow (roughly 30 to 85 seconds) and cost more than a short answer.
 
+
+## 16. Phase 5: AI Executive Council Protocol
+
+**Scope.** Turns the four independent executives (CAO, COO, CTO, CMO) into a governed decision engine. A question goes in; **2 to 3 decision-ready options for the human CEO** come out, with dissent and risk preserved. The council **advises and never acts**: it has no execution tools. The four agents' own code and endpoints are unchanged, and the frontend is untouched (a browser-facing wrapper is Phase 6 scope).
+
+### The eight rules (Clause 17, enforced in code, not left to the model)
+| # | Rule | Where it is enforced |
+|---|---|---|
+| 1 | **No Impasse.** Unresolved debate still yields 2-3 CAO options, each labelled with its unresolved objection | `validate_options()` raises on <2 or >3 options, so the session ends `FAILED` and no result is returned |
+| 2 | **Solution over ego.** No agent "wins" | Clause 17 text; the synthesis records `supported_by` and `dissent_from` per option |
+| 3 | **COO moderation.** All inter-agent traffic is work-related, need-based and logged; the COO chairs | The COO runs round 2 and the red team; every turn is logged to `CouncilTurnLog`; `on_topic: false` escalates |
+| 4 | **Hard constraints veto soft preferences.** The COO's veto is terminal | `valid_vetoes()` accepts a veto only with a named constraint AND source from an agent that stated a hard constraint (the COO may veto on its own authority); a vetoed topic is never revised again |
+| 5 | **Missing data is not a compromise** | **The COO alone decides what blocks.** Agents only FLAG questions (`missing_critical_data`); a flag can never halt a session. The COO's moderation returns `critical_data_required` (at most 3, consolidated). Only a non-empty list halts with `NEEDS_CEO_INPUT`, and the questions returned are EXACTLY the COO's list, never the agents' raw flags. Flags the COO rules non-critical are carried into the CAO's synthesis as OPEN QUESTIONS, and each option states them as labelled assumptions. Synthesis is never attempted on a halted session |
+| 6 | **Strange behaviour escalates** | Circular contradiction (same conflict still open after 2 loops), off-topic drift, or confidence collapse (below 25, or a 40-point fall) gives `ESCALATED_TO_CEO` |
+| 7 | **Red team is mandatory** | `apply_red_team()` rejects the whole synthesis if ANY option lacks the COO's single most likely failure mode (empty, missing, or "n/a") |
+| 8 | **No authorization bypass** | `force_pending()` sets `status: pending_human_approval`, `executed: false` in code whatever the model wrote; the result's top-level `executed` is a constant `false` |
+
+**Clause 17 lives outside the Executive Constitution.** Clauses 0-15 in `EXECUTIVE_CONSTITUTION` are byte-identical to before (compared with git `HEAD`), so every solo agent call and every existing test is unchanged. Clause 17 is a separate `COUNCIL_CLAUSE_17` (in a `COUNCIL_CONSTITUTION` dict) that `build_system_prompt(..., include_council=True)` appends after the constitution, only for council turns. **There is no Clause 16** (the brief named 17); do not "fix" the gap without deciding on it.
+
+### Code map
+- `backend/app/agents/council.py`: `run_council_session(query, agents=None)`, `select_participants()`, the rounds, `Budget`, the loop guard, the normalizers.
+- `backend/app/prompts/council_prompts.py`: the compact role cards and the four JSON contracts (turn, moderation, synthesis, red team).
+- `backend/app/governance/council_store.py`: raw-SQL access to the two new tables, and the orphan rule.
+- `backend/app/api/council.py`: `POST /api/council` and `GET /api/council/{session_id}`. `backend/app/api/security.py`: new `require_council_key()`.
+- `frontend/prisma/schema.prisma`: enum `CouncilStatus`, models `CouncilSessionLog` and `CouncilTurnLog`. Migration `20261110103220_add_council_protocol`.
+- `backend/tests/test_council_protocol.py`: the Phase 5 tests.
+
+### Access and keys
+Both endpoints need `INTERNAL_COUNCIL_KEY` in the **`X-Internal-Council-Key`** header, checked before anything else (so an unauthenticated caller can never cause a model call). Unset on the server gives 503. **It is a fifth, separate key:** the four agent keys do not open the council (in any header), and the council key opens no agent endpoint, cross-check or the kill switch. Tests pin every pairing.
+
+
+### The async job pattern (why it exists)
+A session makes several model calls (50-70 s each when solo) and would time out one Render request. So:
+1. `POST /api/council` `{query, agents?}` checks the key and input, takes a concurrency slot, writes a `CouncilSessionLog` row with status `RUNNING`, starts the session as a background `asyncio` task and returns **`202 {session_id, status: "RUNNING"}`** at once.
+2. `GET /api/council/{session_id}` reads that row. While `RUNNING` it returns only `{session_id, status, started_at}`. Once terminal it returns the full result: options, conflict matrix, vetoes, COO notes, red-team findings, dissent, CEO questions, escalation reason, call and token counts, turns, and `executed: false`.
+3. **The database is the source of truth, not process memory.**
+4. **Orphan rule:** a `RUNNING` row older than 5 minutes is returned, and recorded, as `FAILED` with reason `orphaned by restart`, because a Render restart or redeploy would otherwise leave it `RUNNING` forever. The session deadline is 240 s, shorter than this, so a live session is never called orphaned.
+5. **Concurrency cap:** at most 3 sessions at once (an in-memory counter with a lock; Render runs one instance). A fourth gets 503 with `Retry-After: 30` and no row is created. The slot is released even if the session crashes.
+6. With no `GOVERNANCE_DATABASE_URL` the endpoints answer 503: a session nobody can poll is useless.
+
+### The six rounds
+0. **Intake:** validate, then `select_participants()` picks 2-4 agents with a rationale (keyword rules, no model call). The CAO and COO always sit; the CTO and CMO join when the question touches their field. A caller can name agents; the CAO and COO are added if missing.
+1. **Parallel proposals:** every participant answers at once with `asyncio.gather`, so the round takes about **one** call, not N. A test measures it: four 0.4 s calls finish in about 0.4 s, with all four in flight together. A failed agent is dropped, and the session continues if at least 2 usable proposals remain, including the COO.
+2. **COO moderation:** one call is shown every question the agents flagged (de-duplicated) and rules on them. It maps conflicts, rules vetoes, decides which flags are critical (`critical_data_required`), asks targeted revision questions, and can rule the session off-topic.
+3. **Revisions:** at most 2, one targeted agent each. An agent that changes stance resolves its conflict. One that holds the same stance leaves it open, and after 2 loops the session escalates.
+4. **CAO synthesis:** exactly 2-3 options, each with `supported_by`, `dissent_from`, `unresolved_objection` and an optional `proposed_action`.
+5. **COO red team:** the single most likely failure mode for every option.
+
+**Statuses:** `RESOLVED`, `NEEDS_CEO_INPUT`, `ESCALATED_TO_CEO`, `FAILED`, plus `RUNNING` while in flight (the brief's four omitted it, but POST needs it). `humanAction` starts `Pending` and nothing sets it yet.
+
+### Latency and cost controls (all in code, all configurable)
+| Control | Default | Env var |
+|---|---|---|
+| Output cap, agent turn (solo agents use 16384) | 600 tokens | `COUNCIL_TURN_MAX_TOKENS` |
+| Output cap, COO moderation / red team and CAO synthesis | 1200 tokens | `COUNCIL_CHAIR_MAX_TOKENS` |
+| Model calls per session | 10 | `COUNCIL_MAX_CALLS` |
+| Input tokens per session | 40000 | `COUNCIL_MAX_INPUT_TOKENS` |
+| Output tokens per session | 10000 | `COUNCIL_MAX_OUTPUT_TOKENS` |
+| Concurrent sessions | 3 | `COUNCIL_MAX_CONCURRENT` |
+| One model call times out after | 45 s | `COUNCIL_CALL_TIMEOUT_SECONDS` |
+| Whole session deadline | 240 s | `COUNCIL_DEADLINE_SECONDS` |
+| Model | `claude-sonnet-5-5` | `COUNCIL_MODEL` |
+
+- **The turn cap is enforced twice:** as the API's `max_tokens`, and again in code, which cuts the reply to the cap and charges at most the cap. A model (or mock) that returns 5000 tokens still yields at most about 600 tokens of council text (tested).
+- **Chair turns use 1200, not 600**, as agreed: a 2-3 option synthesis or a red team will not fit in 600. This is a deliberate deviation from the brief's "~600".
+- **Input and output are capped separately.** The brief's "~20k tokens" is impossible as an input cap: Clause 17 plus the constitution is about 1.1k tokens per call, so 10 calls need about 35k input. Hence 40k in and 10k out.
+- **Compact prompts.** Council turns use the constitution, Clause 17 and a short role card (about 1.3k tokens in total), not the 5-7k token solo prompts. No RAG runs in council turns.
+- **The call ceiling is checked BEFORE each call** (never after), and synthesis and red team always keep 2 calls in reserve. Round 1 (4) + moderation (1) + synthesis (1) + red team (1) = 7, leaving 3 for revisions. **A revision that would eat the reserve halts the session `FAILED`** (as agreed; skipping it and keeping the dissent would arguably be kinder, and is a one-line change if you prefer it).
+- Every `FAILED` session is logged at ERROR level with its reason, calls and tokens. Nothing overspends silently.
+
+
+### Tests (`backend/tests/test_council_protocol.py`, 73)
+No database and no real model: a scripted fake model stands in for Anthropic, and an in-memory store stands in for the council tables. Coverage:
+- **Clause 17:** clauses 0-15 untouched, 17 only in council prompts, all eight rules present.
+- **Happy path:** 4 agents, a conflict, moderation, a revision, then 2-3 red-teamed options and `RESOLVED`.
+- **Hard-constraint veto:** the CMO's preference is overridden by the CTO's security floor and the debate is closed (no revision call). A "veto" with no named constraint or source, or from an agent that stated none, is not a veto.
+- **`NEEDS_CEO_INPUT` (the COO decides):** a flagged question halts the session ONLY when the mock COO confirms it in `critical_data_required`; the halt questions equal the COO's list exactly (consolidated, capped at 3, never the agents' raw flags); agents flagging questions while the COO rules none critical does NOT halt and the flags reach the CAO synthesis as open questions; a flag raised in a revision cannot halt; no synthesis or red-team call is made on a halted session.
+- **Question persistence:** the `ceoQuestions` column holds `{critical, open, agent_flagged}` for every status (round-tripped through the real store functions and the API, including older bare-list rows).
+- **`ESCALATED_TO_CEO`:** a forced contradiction loop halts at exactly 2 revisions with no infinite loop; off-topic drift; confidence collapse and a sharp confidence fall.
+- **Option count:** 1 and 4 options are rejected (also 0, none, wrong type), and the session does not resolve.
+- **Red team:** an option with an empty, missing or "n/a" failure mode is rejected.
+- **Authorization non-bypass:** a mock model that claims its proposed action is "approved" and "executed" still comes back `pending_human_approval`, `executed: false`; the module has no execution tools.
+- **Turn cap:** a mock that returns 5000 tokens is cut to the cap and charged at the cap; the API `max_tokens` is 600 / 1200, never 16384.
+- **Budget:** the 11th call is refused, the 2 reserved calls are kept, input and output are capped separately, and a revision that would overspend halts `FAILED`.
+- **Parallel fan-out:** four 0.4 s calls take about 0.4 s with all four in flight at once (not about 1.6 s); a source check pins `asyncio.gather`; one failed agent degrades instead of failing the session.
+- **Async API:** POST answers 202 in under 0.5 s while the session takes seconds, polling shows `RUNNING` then the full result, bad input is 422, unknown ids 404, the orphan rule, the concurrency cap (503 + `Retry-After`), slot release after a crash.
+- **Key separation:** every agent key is refused by the council in every header; the council key is refused by all four agent endpoints, and by the kill switch; unset gives 503.
+
+**Whole backend suite: 490 OK** (417 before Phase 5, plus these 73), run in one pass with the database-backed classes against the local database.
+
+**Mutation-checked:** deliberate breakages (option range 1-4, red team off, status or `executed` taken from the model, turn cap off, sequential fan-out, missing-data halt off, the council gate using the CAO key, the revision loop guard off) each made tests fail. One mutation, switching off only the first of the two loop guards, did NOT fail a test: the second guard (after the second revision) fully covers it, so that guard was redundant and was removed rather than left untested.
+
+### Deploying Phase 5
+1. **Apply the migration to Neon** (`prisma migrate deploy` from `frontend/`). It was applied to the LOCAL database only. Until Neon has it, `POST /api/council` answers 503 (could not record the session) and nothing else is affected.
+2. Set **`INTERNAL_COUNCIL_KEY`** on Render (a random 64-character hex string, different from the other four). `render.yaml` and `backend/.env.example` carry the new variables.
+3. Nothing changes for the existing agents or the frontend.
+
+### Honest limits (DO NOT OVERSTATE)
+- **Live runs: local only, one query, four sessions.** The unit tests mock the model. Separately the council was run against the REAL `claude-sonnet-5-5` through the real HTTP path (POST 202 then GET polling) and the local database, four times with one strategic query ("Should we launch a premium RAS feasibility consulting service for mid-sized shrimp farmers in Southeast Asia?", the last run with context added). It has NOT been run on Render or against Neon, and four runs of one query is a smoke test, not a reliability measurement. Treat the timings below as one sample.
+- **What the live runs found (each fixed or explained):**
+  1. **Run 1 FAILED: the model's hidden thinking ate the whole turn cap.** `claude-sonnet-5-5` thinks by default and thinking tokens count against `max_tokens`. All 600 tokens went on one EMPTY thinking block and every agent returned no text. The mocks could not see this. Fix: council calls send `thinking={"type": "between_tools"}` (this model rejects `"disabled"` with a 400; `COUNCIL_THINKING` overrides it, `omit` sends nothing). A call that returns no text now logs the stop reason and thinking tokens, and regression tests simulate the thinking-only reply.
+  2. **Even with thinking off, the first compact contract overran 600 tokens** (cut off mid-JSON). Fix: the turn contract was tightened (150 words max, per-field word limits, 2 items per list, a worked example). Replies are now about 270 to 390 tokens. **The 600 cap was NOT raised.**
+  3. **Runs 2 and 3 ended `NEEDS_CEO_INPUT` on the broad query.** First every agent flagged questions, so the rule was changed: only the COO can halt (see rule 5). Then the COO itself ruled the pilot budget cap and the target countries critical. That is the governance working: the CEO is asked, not guessed at.
+  4. **Run 4 (the same query plus "pilot budget cap USD 150,000; initial markets Vietnam and Thailand") reached `RESOLVED`.** Three participants (CAO, COO, CMO; the CTO correctly not selected). Round 1 took 4.3 s of wall clock for three calls that summed to 11.6 s (about 1.0x the slowest call). The COO moderation returned a valid contract with no conflict and one hard-budget-cap veto, and ruled no flagged question critical. The CAO returned three options (a lean one-country pilot, a two-country staged pilot, a customer-discovery-first option), each with labelled assumptions drawn from the open questions, an unresolved objection and, where it applied, dissent. The COO red team attached a specific failure mode to each. Total **25.1 s wall clock, 6 model calls, 20,148 tokens**, and every call stayed under its cap. All rows were written: the session row (`RESOLVED`, `humanAction` `Pending`, options, red team and question record) and six turn rows.
+- **The latency picture is better than feared but is ONE sample.** A resolved session took about 25 s here because the model answers short, capped JSON in 3 to 8 s per call. The 50 to 70 s figure in the brief was for a solo 16384-token answer. Revisions could add up to 2 more calls. The async design is still right (a slow API, a retry or revisions add up, and Render's request timeout is what it protects against), but do not assume 25 s in production.
+- **The council is slower than one compact call, by design.** Round 1 costs about one call, but moderation, each revision, synthesis and red team run in sequence, so a session is roughly 4 to 7 sequential calls.
+- **The COO's red-team failure modes were long** (about 90 words each), not the single short line the contract implies. The code only requires a concrete, non-empty one, so they are accepted. They fit inside the 1200 cap (489 tokens used).
+- **Some of the CAO's assumptions read as facts.** In run 4 they are labelled "Assumption:" as required, but one stated a guess as if known ("Century Aqua trial data exists but is unreviewed", which no agent knew). Code cannot tell a fair assumption from a made-up fact. The CEO should read them as things to confirm, which is why the unanswered questions are also kept separately in `open_questions`.
+- **Council turns are not the agents' solo answers.** They use compact role cards with no knowledge base (no RAG) and about 400 words, so an agent's council position is shallower than its solo answer. They are written to `CouncilTurnLog`, not `AgentAuditLog` (`auditLogId` is always null), and are not scored by the constitutional-score check. The kill switch (Clause 15) does not clear a running council session.
+- **Hard-constraint vetoes are judged by the COO model.** Code checks that a veto names a constraint and a source and that the agent really stated one, but it cannot verify that a law, a physical limit or a budget cap is real. A confident wrong veto would be accepted. The CEO should read the vetoes.
+- **Loop and drift detection is coarse.** A loop is "the same conflict still open after 2 revisions", and drift is the COO's `on_topic` ruling. Confidence collapse relies on the confidence numbers the models state, which are the models' own judgement, not statistics.
+- **The cost ceiling is per session, not per day.** There is no daily or per-user budget, and the concurrency cap is in memory, so it resets on a restart and would not hold across multiple instances.
+- **A session in flight is lost on a restart** (and reported as `FAILED`, orphaned by restart after 5 minutes). Nothing resumes it.
+- **No approval step exists** (as for the CTO and CMO). `humanAction` stays `Pending`. Approval is a manual, off-system act.
+- **Not reachable from the browser.** `/api/council` is not proxied by Next.js. A staff-only wrapper is Phase 6.
+- **`PRE_CONSULTATION_ENABLED` is still `False`.** The CAO's `pre_consultation_requests` stay null in solo answers; the council does not use them.
+

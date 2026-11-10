@@ -191,6 +191,76 @@ model CrossValidationLog {
   @@index([agentAId, agentBId, timestamp])
 }
 
+// ---------- AI Executive Council Protocol (Phase 5) ----------
+// Written by the Python backend (backend/app/agents/council.py, backend/app/api/council.py) with raw SQL, so
+// the backend supplies the uuid. RUNNING is the state of a session in flight; the other four are terminal.
+// A RUNNING row older than 5 minutes is reported as FAILED ("orphaned by restart") when polled.
+enum CouncilStatus {
+  RUNNING
+  RESOLVED
+  ESCALATED_TO_CEO
+  NEEDS_CEO_INPUT
+  FAILED
+}
+
+// One row per council session: the CEO's question, who took part, and everything the protocol produced.
+// The council only advises: caoSynthesizedOptions are options for the CEO, and any proposed action stays
+// pending_human_approval with executed false. humanAction is the CEO's decision, and nothing sets it yet.
+model CouncilSessionLog {
+  id                    String           @id @default(uuid())
+  query                 String
+  participatingAgents   String[]         @default([])
+  selectionRationale    String
+  status                CouncilStatus    @default(RUNNING)
+  // Who disagrees with whom, per topic: [{topic, agents, positions, resolved}].
+  conflictMatrix        Json?
+  // Terminal hard-constraint vetoes: [{agent_id, constraint, source, overrides}].
+  hardConstraintVetoes  Json?
+  cooModerationNotes    String?
+  // The CAO's 2-3 options for the CEO, each with its unresolved objection and the COO's red-team failure mode.
+  caoSynthesizedOptions Json?
+  // [{option_id, most_likely_failure_mode, ...}] from the COO's mandatory red-team check.
+  redTeamFindings       Json?
+  // Objections that stayed open, kept on the record on purpose.
+  dissentRecord         Json?
+  // Precise questions for the CEO (status NEEDS_CEO_INPUT).
+  ceoQuestions          Json?
+  // Why the session halted (ESCALATED_TO_CEO, FAILED).
+  escalationReason      String?
+  modelCalls            Int              @default(0)
+  totalTokens           Int?
+  startedAt             DateTime         @default(now())
+  completedAt           DateTime?
+  humanAction           HumanAction      @default(Pending)
+  turns                 CouncilTurnLog[]
+
+  @@index([status])
+  @@index([startedAt])
+  @@index([humanAction])
+}
+
+// One row per agent turn inside a council session (the moderation, revision, synthesis and red-team turns too).
+model CouncilTurnLog {
+  id              String            @id @default(uuid())
+  sessionId       String
+  session         CouncilSessionLog @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  round           Int
+  agentId         String
+  position        String
+  // [{constraint, source}] the agent says it relies on.
+  hardConstraints Json?
+  // 0-100, the agent's own stated confidence.
+  confidence      Int?
+  sourcesCited    String[]          @default([])
+  // AgentAuditLog.id when the turn was also audited, else NULL.
+  auditLogId      Int?
+  tokensUsed      Int?
+  timestamp       DateTime          @default(now())
+
+  @@index([sessionId, round])
+  @@index([agentId, timestamp])
+}
+
 // Who changed what, and when, for every admin action.
 model AdminAuditLog {
   id         Int      @id @default(autoincrement())
