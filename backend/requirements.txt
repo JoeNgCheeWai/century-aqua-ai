@@ -7,3 +7,4 @@ pinecone==10.3.0
 openai==3.46.0
 PyMuPDF==2.1
 pdfplumber==0.11.10
+pg8000==1.31.6

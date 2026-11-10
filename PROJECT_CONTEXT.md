@@ -39,7 +39,7 @@ Century Aqua AI is a multi-agent AI platform for the aquaculture industry. It fe
 ### AI Model Constraints
 - **Gatekeeper Model:** MUST use `claude-haiku-5-5`.
 - **Dr. Aqua Model:** MUST use `claude-sonnet-5-5`.
-- **AI_CAO Model:** Same tier as Dr. Aqua (`claude-sonnet-5-5`) for now, set through its own `CAO_MODEL` env var so it can be scaled independently. `CAO_MAX_TOKENS` defaults to 4096.
+- **AI_CAO Model:** Same tier as Dr. Aqua (`claude-sonnet-5-5`) for now, set through its own `CAO_MODEL` env var so it can be scaled independently. `CAO_MAX_TOKENS` defaults to 8192 (was 4096 before Section 12, because one answer now also carries the reasoning chain and three scenarios).
 - *Never* revert to deprecated 2024 models (e.g., claude-3-haiku-20240307, claude-3-5-sonnet-20241022).
 
 ### Dr. Aqua Persona & Tone
@@ -123,7 +123,7 @@ The platform has two agent tiers. **Tier 1** is tactical and farmer-facing (Dr. 
 ### Wiring decisions (resolved)
 - **No public routing:** The Gatekeeper stays strictly for Dr. Aqua (public farming queries). It was deliberately NOT upgraded to a triage router, and `/api/chat` never reaches the CAO.
 - **Separate secure endpoint:** `POST /api/cao` is independent of the public chat. It requires an `X-Internal-CAO-Key` header matching the `INTERNAL_CAO_KEY` env var, checked before any model call so unauthenticated callers cannot burn tokens. If the variable is unset the endpoint returns 503 (fails closed). The endpoint does no triage: every authenticated request goes to the CAO.
-- **Model and length:** `CAO_MODEL` (default `claude-sonnet-5-5`) and `CAO_MAX_TOKENS` (default 4096).
+- **Model and length:** `CAO_MODEL` (default `claude-sonnet-5-5`) and `CAO_MAX_TOKENS` (default 8192; see Section 12).
 
 ### Remaining open items
 - **Internal access method:** how staff and enterprise clients will actually call `/api/cao` (script, Postman, or a separate internal tool).
@@ -256,3 +256,166 @@ Symptom: pages return 200 but look unstyled (white background, plain left-aligne
 
 ### Tests (subscriber dashboard)
 - No automated frontend tests yet. Verified with throw-away scripts against a real local Postgres (limits, windows, 25 parallel requests, roles, refunds) and the real route handler with Clerk stubbed. Not verified: a real Clerk sign-in, or a multi-connection concurrency run.
+
+## 11. Constitutional AI Governance Framework (all executive agents)
+
+**Core principle: the human makes decisions, the AI is the copilot.** Every executive agent (AI_CAO now, AI_COO next, later ones) inherits one constitution and one governance layer. Agents have no tools and cannot act on anything; they advise.
+
+### Code map
+- `backend/app/agents/base_constitution.py`: `EXECUTIVE_CONSTITUTION` (Clause 0 + Clauses 1-15) and `build_system_prompt(agent_prompt, extra="")`. The constitution is PREPENDED, so an agent's own prompt can add a role but never sit above it. `tests/test_governance.py` pins the clause numbers, titles and key wording.
+- `backend/app/agents/registry.py`: the roster (`cao` available, `coo` planned with no answer function yet). Add a new agent here.
+- `backend/app/agents/cross_validation.py`: `cross_check(agent_a_id, agent_b_id, query, context)`.
+- `backend/app/governance/`: `db.py` (pg8000, pure Python), `scoring.py`, `audit.py`, `kill_switch.py`, `rate_limit.py`.
+- `backend/app/api/`: `security.py` (shared key check), `cao.py` (`POST /api/cao`, moved out of `main.py` in Phase 1 of the AI Executive Team), `cross_check.py`, `admin/agents/reset.py`. Routers are mounted in `main.py`.
+- Tables (migration `add_constitutional_governance`, applied to local AND Neon): `AgentState`, `AgentAuditLog`, `CrossValidationLog`, enum `HumanAction`.
+
+### The 16 clauses (summary; the exact text is in `base_constitution.py`)
+| # | Title | Gist |
+|---|---|---|
+| 0 | Human-in-the-loop (PRIME DIRECTIVE) | Copilot only. No executing, paying or deciding. Human is sole decision-maker. Frame everything as a recommendation for review |
+| 1 | Forward-looking | 6-12 months ahead, risks/opportunities, optimistic/baseline/pessimistic scenarios |
+| 2 | Detail-oriented | Specific, measurable steps with timelines and success metrics |
+| 3 | Anti-hallucination | State confidence 0-100%, never fabricate, separate facts from inference |
+| 4 | Transparency | Reasoning chain and cited sources for every recommendation |
+| 5 | Collaborative cross-validation | May consult other executives; record consultations |
+| 6 | Accountability | Traceable recommendations, own errors, correction protocols |
+| 7 | Ethical compliance | No bias; animal welfare, environment, community; disclose conflicts |
+| 8 | Data privacy | Never expose user data, IP or finances; data minimisation |
+| 9 | Regulatory compliance | Flag possible aquaculture, environmental or trade violations |
+| 10 | Resource efficiency | Cost-effective; no redundant token use |
+| 11 | Human oversight and escalation | Defer on critical decisions; escalate if confidence <60%, ethics, or high stakes |
+| 12 | Stakeholder alignment | Farmers, investors, employees, customers, regulators; long-term value |
+| 13 | Continuous learning | Admit outdated knowledge; request ingestion when data is missing |
+| 14 | Version control | Track changes to recommendations and explain revisions |
+| 15 | Kill switch compliance | Accept immediate reset; do not resist or preserve history |
+
+### Response format enforced on every executive answer
+The constitution footer tells the model to state confidence, give reasoning and sources, and end with a line starting `Recommendation for human review:`. If confidence is below 60%, an ethical concern arises or stakes are high, the answer must start with `ESCALATE TO HUMAN:`. If the model omits the closing line, CODE appends a framing notice, so a reply can never read as a decision.
+
+### Audit log (`AgentAuditLog`, Clause 6)
+- One row per CAO answer: agentId, userId, query, response, constitutionalScore, sourcesCited, humanAction (default `Pending`), timestamp. In the same transaction the agent's `AgentState` rolling buffer (last 20 exchanges) and violation count are updated.
+- **The score is a surface check, not an evaluation.** It looks for the required markers (recommendation line 30, stated confidence 20, reasoning plus sources 20, no claimed actions 15, escalation when confidence <60% 15). A score below 70 counts as a violation. It says nothing about whether the advice is right. It is computed on the model's own words BEFORE code adds framing.
+- Recording is best-effort: if the database is down the answer is still returned, the failure is logged, and `audit_id` is `null` in the response so the caller can see it was not recorded.
+- `humanAction` is changed with `audit.set_human_action(id, 'Approved'|'Modified'|'Rejected')`. There is NO HTTP endpoint for it yet (Phase 3 admin UI).
+- `/api/cao` returns `response` (and `reply`, the same text), `reasoning_chain`, `scenarios`, `pre_consultation_requests` (Section 12), plus `constitutional_score`, `needs_review`, `audit_id`, `reset_epoch`, `history_discarded`, `sources`. Callers send `X-User-Id` so the log says who asked.
+
+### Cross-validation (Clause 5): `POST /api/agents/cross-check`
+- Body: `{agent_a_id, agent_b_id, query, context}` (`context` is agent A's recommendation). Header `X-Internal-CAO-Key`.
+- Returns `{valid, reasoning, confidence (0-1), constitutional_alignment, logged}`.
+- Agent B is asked for ONE JSON object. The recommendation is passed as quoted DATA and cannot forge the prompt delimiters. B is called with RAG off and audit off (the check is recorded in `CrossValidationLog`).
+- **Fails closed:** a reply that is not valid JSON, or breaks the shape, returns `valid=false, confidence=0`. A crashed reviewer does the same. `valid` means "no material problem found", NOT "approved".
+- Guards: 30-second timeout (HTTP 504), 5 checks per minute per ORDERED pair (HTTP 429 with `Retry-After`; A to B and B to A have separate budgets), unknown agent 404, planned-but-unbuilt agent 501, self-check 400.
+- The rate limit is in memory per process. Render runs one instance; with N instances the real ceiling is 5 x N per minute.
+- Until the COO exists, `cao -> coo` returns 501. Tests use a stand-in COO.
+
+### Kill switch (Clause 15): `POST /api/admin/agents/{agent_id}/reset`
+- Headers: `X-Internal-CAO-Key` and a REQUIRED `X-Admin-Id` (who is doing it). 503 if the key or database is not configured.
+- ONE transaction (all or nothing): clears `AgentState.conversationHistory`, bumps `resetEpoch`, sets `lastReset`, zeroes violations, writes an `AdminAuditLog` line (`agent_reset`, admin id, IP, counts, time). Tested: a simulated failure mid-reset leaves state unchanged.
+- "Reset to base constitution" needs no stored change: the constitution is code, prepended to every call.
+- **Audit logs are never deleted by a reset** (accountability must survive it).
+- **Callers hold their own history** (the CAO is stateless). `/api/cao` therefore takes `reset_epoch`; if it is older than the agent's current epoch the caller's history is dropped, never sent to the model, and `history_discarded` is `true`. A caller that never sends `reset_epoch` is NOT protected, so the future internal chat must send it.
+
+### Honest limits (DO NOT OVERSTATE)
+- The constitution is instructions to a model. It shapes behaviour; it cannot guarantee it. The non-model controls are the audit log, scoring flags, kill switch, human review, and the fact agents cannot act.
+- A shared key identifies the calling SYSTEM, not a person. `X-Admin-Id` and `X-User-Id` are trusted from whoever holds the key, so the key must stay server-side (the Next.js server, after its own staff check). Never expose it to a browser.
+- Neither new endpoint is reachable through Vercel yet (`next.config.ts` proxies only `/api/health`), and the Render URL is public, so the key is the only barrier there. The Next.js `/api/admin/*` wrappers that add the staff check come in Phase 3.
+- `AgentState` is one row per agent, shared by everyone, so it holds only a short capped buffer of recent exchanges for the reset and audit trail. It is never fed back to the model, because that would leak one staff member's conversation into another's.
+
+### Keys and environment
+- `INTERNAL_COO_KEY`: 64-char hex, generated and saved in `backend/.env`; documented in `backend/.env.example` and `render.yaml`. Reserved for the COO; no endpoint reads it yet. Add it to Vercel (Production, Preview, Development) as a sensitive variable, and to Render, when the COO is built.
+- `GOVERNANCE_DATABASE_URL` (falls back to `DATABASE_URL`): the DB the backend writes to. Local `.env` points at the local `prisma dev` server. **Render needs this set to the Neon URL** or the audit log and kill switch stay off (the CAO still answers).
+- Neon was migrated with `prisma migrate deploy` (NOT `db push`, which skips migration history and would break the next deploy).
+
+### Tests
+- `tests/test_governance.py` (35, no database): constitution text, prepending, scoring, cross-validation, rate limit, HTTP gating.
+- `tests/test_governance_db.py` (15): audit rows, rolling buffer, kill switch, atomic rollback, endpoints. Runs ONLY against a localhost database (skipped otherwise) and never touches Neon. Slow (about 4 minutes) because every database call opens a new connection.
+- `tests/__init__.py` installs a stub `anthropic` ONLY if the real one cannot be imported (Windows Smart App Control blocks its native `jiter` file on this machine). On Linux/Render the real package loads and nothing is replaced.
+- Whole backend suite: 221 tests, OK (189 before Section 12 plus 32 in `tests/test_cao_reasoning.py`).
+
+### Next: layering the AI_COO on top
+1. Write `backend/app/prompts/coo_prompt.py` and `backend/app/agents/coo_agent.py`; build the prompt with `build_system_prompt`, log with `audit.record_response('coo', ...)`.
+2. Point the `coo` entry in `registry.py` at its answer function. `cross_check('cao','coo',...)` then works with no other change.
+3. Decide the COO endpoint's key (`INTERNAL_COO_KEY`) and extend `security.py` to check it.
+4. Open: Next.js wrappers for the kill switch and human-action buttons (Phase 3), epoch handling in the internal chat, a periodic review of low-score and `Pending` entries.
+
+## 12. Phase 1: CAO Enhanced Reasoning & Prediction (AI Executive Team)
+
+**Scope.** First phase of the AI Executive Team build. It upgrades the AI_CAO only: it now shows its reasoning, models three futures for strategic questions, and carries an empty slot for later COO/CTO input. The COO, the CTO, the Council Protocol and the Living Console are NOT built, and the frontend is untouched.
+
+**Structured to support the future Council Protocol.** The output is machine-readable JSON, not prose. A later council can read `reasoning_chain` and `scenarios` from the CAO, compare them with other executives' views, and fill `pre_consultation_requests`, without changing the shape. Everything is stored in `AgentAuditLog`, so a council can replay what the CAO concluded and why.
+
+### Code map
+- `backend/app/prompts/cao_prompt.py`: `CAO_REASONING_PROMPT`, the output-format instructions added to `CAO_SYSTEM_PROMPT`. `cao_agent.py` joins them as `CAO_ROLE_PROMPT`, and the constitution is still prepended first.
+- `backend/app/agents/cao_reasoning.py`: `parse_cao_output()` validates the model's JSON. It is agent-neutral, so a COO or CTO can reuse it.
+- `backend/app/agents/cao_agent.py`: `get_cao_result()` parses, scores, logs and returns the result. `get_cao_answer()` still returns plain text, so cross-validation is unaffected.
+- `backend/app/api/cao.py`: `POST /api/cao` and its response models (moved out of `main.py`; the router is mounted there).
+- `backend/app/governance/audit.py` and `db.py` (`text_array_param`): write the three new columns.
+- `frontend/prisma/migrations/20261110020033_enhance_cao_reasoning_and_prediction/`: the migration.
+
+### Response of `POST /api/cao`
+```json
+{
+  "response": "final recommendation (framing and sources note included)",
+  "reply": "same text as response, kept for old callers",
+  "reasoning_chain": ["Step 1: ...", "Step 2: ...", "Step 3: ...", "Data and sources: ...", "Assumptions: ...", "Limitations: ..."],
+  "scenarios": {"optimistic": {}, "baseline": {}, "pessimistic": {}},
+  "pre_consultation_requests": {"coo_query": null, "cto_query": null},
+  "constitutional_score": 87, "needs_review": false, "audit_id": 123,
+  "reset_epoch": 0, "history_discarded": false, "sources": ["..."]
+}
+```
+
+### Reasoning chain
+A `list[str]`, written by the model BEFORE it writes the recommendation. Fixed order:
+1. **3 to 5 entries starting `Step 1:`, `Step 2:`, ...**: the logical steps from question to conclusion.
+2. **`Data and sources:`**: each data point and where it came from: a knowledge-base excerpt as `[n]` with file and document type, `PUBLIC LITERATURE` named as such, or `general knowledge`.
+3. **`Assumptions:`**: each one labelled illustrative assumption, industry range, or sourced data.
+4. **`Limitations:`**: gaps, thin or outdated data, conflicts, and what could not be verified.
+
+The parser keeps at most 12 entries of 500 characters each. An empty list means the model did not follow the format.
+
+
+### Three-scenario predictive model
+`scenarios` is `{optimistic, baseline, pessimistic}` for a STRATEGIC question (a decision, investment, expansion, new species or technology, market entry, policy position, risk assessment or roadmap). It is `null` for anything else, such as a factual lookup or a clarifying question.
+
+| Scenario | Meaning |
+|---|---|
+| `optimistic` | Best case, aggressive growth, favourable factors hold |
+| `baseline` | Most likely outcome on balanced assumptions |
+| `pessimistic` | Worst case on conservative assumptions, high risk awareness |
+
+Each scenario has exactly: `description` (narrative), `timeline` (e.g. "6-12 months"), `resource_requirements` (budget, staff, infrastructure in one string), `confidence_percentage` (whole number 0-100), `key_assumptions` (list), `risks` (list).
+
+Rules enforced in code (`cao_reasoning.py`), not left to the model:
+- **All or nothing.** If any of the three is missing or has a missing field, the WHOLE set is dropped (`null`) and a warning is logged. A half-filled set would look more certain than it is. The recommendation text is still returned.
+- `confidence_percentage` must be a whole number 0-100 (`70`, `70.0`, `"70%"` are accepted; `0.7`, `150`, `true` are rejected).
+- **`confidence_percentage` is the CAO's judgement of plausibility, NOT a statistical probability.** The three need not add up to 100.
+- Money figures in `resource_requirements` must be labelled sourced, industry range or illustrative. The prompt forbids inventing costs, prices, yields or returns (this is an instruction to the model; code does not check it).
+
+### Domain forecasting
+For a strategic question the prompt asks for a "Forecast watch-list" inside `response`: emerging trends, regulatory shifts and biological risks for roughly the next 6-12 months. Items are tied to retrieved excerpts as `[n]` where possible, and each is labelled established, emerging or speculative. With no supporting excerpt the item is marked general knowledge needing verification. Its quality depends on what is ingested: with an empty knowledge base it is general knowledge only.
+
+### Pre-consultation requests (structure only)
+`{"coo_query": str | null, "cto_query": str | null}`. Always `null` for now: `PRE_CONSULTATION_ENABLED = False` in `cao_reasoning.py` forces nulls even if the model writes something, and the prompt tells the CAO never to claim it consulted anyone. The Council Protocol phase flips that flag, and `cross_validation.py` (Clause 5) is the existing channel to build on.
+
+
+### Database (migration `enhance_cao_reasoning_and_prediction`)
+`AgentAuditLog` gained `reasoningChain TEXT[]` (default empty), `scenarios JSONB` (nullable) and `preConsultationRequests JSONB` (nullable). The column names are camelCase like the rest of the table; the API fields are snake_case. Old rows have an empty chain and `NULL` JSON. A non-strategic or malformed answer stores SQL `NULL` in `scenarios`, not the JSON value `null`.
+
+**Applied to the local database only.** Before deploying the backend, apply it to Neon with `npx prisma migrate deploy` from `frontend/`. Until then the audit insert fails and `audit_id` comes back `null` (the answer is still returned; see the audit-log failure policy above). This migration is additive (new nullable or defaulted columns), so it does not touch existing rows.
+
+### Score and fallback behaviour
+- `constitutional_score` is still the surface check from Section 11. It now reads the recommendation plus the reasoning chain, so "reasoning and sources" counts the chain too. It is not a quality score.
+- If the model returns plain text instead of the JSON (or a cross-validation verdict), the text is returned whole as `response` with an empty chain and `null` scenarios. If the JSON is cut off at the token limit, only the `response` text is recovered; the chain and scenarios are lost.
+- `CAO_MAX_TOKENS` default raised from 4096 to 8192, and `render.yaml` and `.env.example` were updated. **A value set by hand in the Render dashboard overrides the default.**
+
+### Tests (`backend/tests/test_cao_reasoning.py`, 32)
+Parser (valid, fenced, null scenarios, partial set dropped, bad confidence, forced-null consultation, plain-text and truncated fallbacks, garbage, caps), prompt contents, and `/api/cao` with a MOCKED model asked "Should we invest in RAS technology for salmon?": 3-5 steps plus three closing entries, three distinct scenarios with confidence, null consultation slots. Six database tests (localhost only, skipped otherwise, dedicated `testbot` agent) check that the stored row has every field and that awkward characters (quotes, backslashes, braces, unicode) survive. Whole backend suite: 221 OK.
+
+### Honest limits (DO NOT OVERSTATE)
+- **Mocked, not live.** No test calls the real model, so nobody has yet seen real CAO output follow the format. Run `test_cao_live.py` or a manual call with a strategic question before relying on it.
+- The reasoning chain is the model's own account of its reasoning, not a verified trace. It can be fluent and still wrong, and the scenarios are informed judgement, not forecasts. The human decides (Clause 0).
+- Code checks the SHAPE of scenarios (complete, numeric, 0-100), not whether the numbers or timelines are sensible.
+- `/api/cao` answers are longer, slower and cost more per call (up to 8192 output tokens).
+- The model decides what counts as a strategic question. It could skip scenarios when it should not; that is a prompt instruction, not enforced in code.
+

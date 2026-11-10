@@ -17,9 +17,13 @@ services:
       - key: CAO_MODEL
         value: claude-sonnet-5-5
       - key: CAO_MAX_TOKENS
-        value: "4096"
+        value: "8192"        # Phase 1: one answer carries the recommendation, reasoning chain and 3 scenarios
       - key: INTERNAL_CAO_KEY
         sync: false          # secret; required to enable the internal-only /api/cao endpoint
+      - key: INTERNAL_COO_KEY
+        sync: false          # secret; reserved for the planned AI_COO (64-char hex)
+      - key: GOVERNANCE_DATABASE_URL
+        sync: false          # secret; the Neon URL. Enables the audit log, agent state and kill switch
       - key: PINECONE_API_KEY
         sync: false          # secret; AI_CAO knowledge base (RAG)
       - key: PINECONE_INDEX

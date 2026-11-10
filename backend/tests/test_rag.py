@@ -28,7 +28,7 @@ from app.agents import cao_agent  # noqa: E402
 from app.rag import document_processor as dp  # noqa: E402
 from app.rag import embeddings, retrieval, vector_db  # noqa: E402
 
-_RAG_ENV_VARS = ("OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX")
+_RAG_ENV_VARS = ("OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX", "GOVERNANCE_DATABASE_URL", "DATABASE_URL")
 
 
 def make_pdf(path: Path, pages: list[str]) -> Path:
@@ -589,7 +589,8 @@ class CaoAgentRagTests(RagTestCase):
             reply = await cao_agent.get_cao_answer("Summarise the NUS trial")
         r.assert_awaited_once_with("Summarise the NUS trial")
         call = self.api.calls[0]
-        self.assertTrue(call["system"].startswith(cao_agent.CAO_SYSTEM_PROMPT))
+        self.assertTrue(call["system"].startswith("EXECUTIVE CONSTITUTION"))
+        self.assertIn(cao_agent.CAO_SYSTEM_PROMPT, call["system"])
         self.assertIn("KNOWLEDGE BASE EXCERPTS", call["system"])
         self.assertIn("[1] NUS_trial.pdf", call["system"])
         self.assertEqual(call["messages"][-1], {"role": "user", "content": "Summarise the NUS trial"})
@@ -601,25 +602,29 @@ class CaoAgentRagTests(RagTestCase):
         with self.patch_retrieval(return_value=fake_result()) as r:
             reply = await cao_agent.get_cao_answer("q", use_rag=False)
         r.assert_not_awaited()
-        self.assertEqual(self.api.calls[0]["system"], cao_agent.CAO_SYSTEM_PROMPT)
-        self.assertEqual(reply, "Strategic answer.")
+        self.assertEqual(self.api.calls[0]["system"], cao_agent.BASE_SYSTEM_PROMPT)
+        self.assertTrue(reply.startswith("Strategic answer."))
+        self.assertNotIn("Knowledge base documents", reply)
 
     async def test_empty_retrieval_behaves_like_before(self):
         with self.patch_retrieval(return_value=fake_result(context="")):
             reply = await cao_agent.get_cao_answer("q")
-        self.assertEqual(self.api.calls[0]["system"], cao_agent.CAO_SYSTEM_PROMPT)
-        self.assertEqual(reply, "Strategic answer.")
+        self.assertEqual(self.api.calls[0]["system"], cao_agent.BASE_SYSTEM_PROMPT)
+        self.assertTrue(reply.startswith("Strategic answer."))
+        self.assertNotIn("Knowledge base documents", reply)
 
     async def test_retrieval_crash_does_not_break_the_cao(self):
         with self.patch_retrieval(side_effect=RuntimeError("rag exploded")):
             reply = await cao_agent.get_cao_answer("q")
-        self.assertEqual(self.api.calls[0]["system"], cao_agent.CAO_SYSTEM_PROMPT)
-        self.assertEqual(reply, "Strategic answer.")
+        self.assertEqual(self.api.calls[0]["system"], cao_agent.BASE_SYSTEM_PROMPT)
+        self.assertTrue(reply.startswith("Strategic answer."))
+        self.assertNotIn("Knowledge base documents", reply)
 
     async def test_unconfigured_rag_end_to_end_does_not_break_the_cao(self):
         reply = await cao_agent.get_cao_answer("q")  # real retrieval, no keys set
-        self.assertEqual(self.api.calls[0]["system"], cao_agent.CAO_SYSTEM_PROMPT)
-        self.assertEqual(reply, "Strategic answer.")
+        self.assertEqual(self.api.calls[0]["system"], cao_agent.BASE_SYSTEM_PROMPT)
+        self.assertTrue(reply.startswith("Strategic answer."))
+        self.assertNotIn("Knowledge base documents", reply)
 
     async def test_history_is_kept_to_last_20(self):
         history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(30)]

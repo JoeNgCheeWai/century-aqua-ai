@@ -24,18 +24,18 @@ enum Role {
 
 // One row per Clerk user, created lazily on their first dashboard visit or chat.
 model User {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   // Clerk's userId (e.g. "user_2abc..."). The link between Clerk and this database.
-  clerkId          String   @unique
-  role             Role     @default(free)
+  clerkId          String    @unique
+  role             Role      @default(free)
   // Messages used in the current session window.
-  messageCount     Int      @default(0)
+  messageCount     Int       @default(0)
   // When the current window ends; the count resets to 0 after this moment.
   sessionResetTime DateTime
   // Purchased top-up credits (not spent by the rate limiter yet).
-  tokenBalance     Int      @default(0)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  tokenBalance     Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
   // Set when an admin bans the user (soft delete). Banned users are refused everywhere.
   bannedAt         DateTime?
 }
@@ -110,6 +110,73 @@ model InternalChat {
 
   @@index([userId, timestamp])
   @@index([projectId, timestamp])
+}
+
+// ---------- Constitutional AI Governance (executive agents: AI_CAO, future AI_COO, ...) ----------
+// Written by the Python backend (backend/app/governance) with raw SQL, which is why the ids are
+// database-generated integers. agentId values are 'cao', 'coo', ... (see backend/app/agents/registry.py).
+
+// What a human decided about an agent's recommendation.
+enum HumanAction {
+  Approved
+  Modified
+  Rejected
+  Pending
+}
+
+// One row per executive agent: a small rolling buffer of its recent exchanges, the reset counter
+// and the violation count. The kill switch clears the buffer and bumps resetEpoch.
+model AgentState {
+  id                       Int       @id @default(autoincrement())
+  agentId                  String    @unique
+  // Last few exchanges, [{at, userId, query, reply}], capped by the backend. Never fed back to the model.
+  conversationHistory      Json      @default("[]")
+  // Incremented by every kill-switch reset. Callers that hold their own history send the epoch they
+  // saw; a stale epoch means the history was cancelled and is ignored.
+  resetEpoch               Int       @default(0)
+  lastReset                DateTime?
+  // Responses whose automatic constitutional score fell below the review threshold.
+  constitutionalViolations Int       @default(0)
+  updatedAt                DateTime  @updatedAt
+}
+
+// One row per executive-agent response, kept for accountability (Clause 6). NOT cleared by a reset.
+model AgentAuditLog {
+  id                      Int         @id @default(autoincrement())
+  agentId                 String
+  userId                  String
+  query                   String
+  response                String
+  // Automatic surface check (1-100), see backend/app/governance/scoring.py. NOT a real evaluation.
+  constitutionalScore     Int
+  sourcesCited            String[]    @default([])
+  // CAO Enhanced Reasoning & Prediction (Phase 1). Written by backend/app/governance/audit.py.
+  // reasoningChain: the CAO's step-by-step logic, data points and sources, assumptions and limitations.
+  reasoningChain          String[]    @default([])
+  // {optimistic, baseline, pessimistic}, each with description, timeline, resource_requirements,
+  // confidence_percentage, key_assumptions, risks. NULL when the question was not a strategic one
+  // and for rows written before this field existed.
+  scenarios               Json?
+  // {coo_query, cto_query}. Structure only for now: nothing consumes it until the Council Protocol.
+  preConsultationRequests Json?
+  humanAction             HumanAction @default(Pending)
+  timestamp               DateTime    @default(now())
+
+  @@index([agentId, timestamp])
+  @@index([userId, timestamp])
+  @@index([humanAction])
+}
+
+// One row per cross-validation (agent A's recommendation reviewed by agent B).
+model CrossValidationLog {
+  id        Int      @id @default(autoincrement())
+  agentAId  String
+  agentBId  String
+  query     String
+  response  Json
+  timestamp DateTime @default(now())
+
+  @@index([agentAId, agentBId, timestamp])
 }
 
 // Who changed what, and when, for every admin action.
