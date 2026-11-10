@@ -317,9 +317,12 @@ class HttpGatingTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/admin/agents/cfo/reset", headers=headers).status_code, 404)
         self.assertEqual(self.client.post("/api/admin/agents/cao/reset", headers=headers).status_code, 503)
 
-    def test_cross_check_to_unbuilt_coo_is_501_and_unknown_is_404(self):
+    def test_cross_check_to_an_unbuilt_agent_is_501_and_unknown_is_404(self):
         headers = {"X-Internal-CAO-Key": KEY}
-        self.assertEqual(self.client.post("/api/agents/cross-check", json=self.CROSS, headers=headers).status_code, 501)
+        # The real COO exists since Phase 2, so "planned but not built" is simulated explicitly.
+        unbuilt = registry.AgentSpec("coo", "Chief Operating Officer", "INTERNAL_COO_KEY", None)
+        with mock.patch.dict(registry.AGENTS, {"coo": unbuilt}):
+            self.assertEqual(self.client.post("/api/agents/cross-check", json=self.CROSS, headers=headers).status_code, 501)
         unknown = dict(self.CROSS, agent_b_id="cfo")
         self.assertEqual(self.client.post("/api/agents/cross-check", json=unknown, headers=headers).status_code, 404)
 

@@ -1,14 +1,14 @@
 """
 The roster of executive agents that sit under the Executive Constitution.
 
-Adding the AI_COO later means: add an entry here, write its agent module (build
-its system prompt with base_constitution.build_system_prompt), and set its key.
-The governance layer (audit log, kill switch, cross-validation) then works for it
-without further changes.
+Adding an agent means: add an entry here, write its agent module (build its system
+prompt with base_constitution.build_system_prompt), and set its key. The governance
+layer (audit log, kill switch, cross-validation) then works for it without further
+changes. The CAO and the COO are built; the CTO is not (Phase 3 of the AI Executive Team).
 
-An agent is "available" when its answer function exists. Planned agents (the COO)
-are listed so that the kill switch can already be armed and so that tests can
-exercise cross-validation against a stand-in before the real agent exists.
+An agent is "available" when its answer function exists. A planned agent is listed
+with ``answer_path=None`` so that the kill switch can already be armed for it and so
+that tests can exercise cross-validation against a stand-in before it exists.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ class AgentSpec:
 
 AGENTS: dict[str, AgentSpec] = {
     "cao": AgentSpec("cao", "Chief Aquaculture Officer", "INTERNAL_CAO_KEY", "app.agents.cao_agent:get_cao_answer"),
-    # Planned: the COO is layered on top of the constitution next. No answer function yet.
-    "coo": AgentSpec("coo", "Chief Operating Officer", "INTERNAL_COO_KEY", None),
+    # Phase 2 of the AI Executive Team. Its own key (INTERNAL_COO_KEY) gates POST /api/coo.
+    "coo": AgentSpec("coo", "Chief Operating Officer", "INTERNAL_COO_KEY", "app.agents.coo_agent:get_coo_answer"),
 }
 
 

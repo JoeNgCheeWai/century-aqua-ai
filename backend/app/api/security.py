@@ -22,16 +22,29 @@ import secrets
 from fastapi import HTTPException
 
 KEY_ENV = "INTERNAL_CAO_KEY"
+CAO_KEY_HEADER = "X-Internal-CAO-Key"
+# The COO has its OWN key: the CAO key does not open /api/coo and the COO key does not open /api/cao.
+COO_KEY_ENV = "INTERNAL_COO_KEY"
+COO_KEY_HEADER = "X-Internal-COO-Key"
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:@+\-]{1,100}$")
 
 
-def require_internal_key(provided: str | None) -> None:
-    """Raise 503 if the server has no key, 401 if the caller's key is missing or wrong."""
-    expected = os.getenv(KEY_ENV, "")
+def require_internal_key(provided: str | None, key_env: str = KEY_ENV, header: str = CAO_KEY_HEADER) -> None:
+    """
+    Raise 503 if the server has no key, 401 if the caller's key is missing or wrong.
+
+    The defaults are the CAO's key and header, so every existing caller is unchanged.
+    """
+    expected = os.getenv(key_env, "")
     if not expected:
-        raise HTTPException(status_code=503, detail=f"Endpoint disabled: {KEY_ENV} is not configured.")
+        raise HTTPException(status_code=503, detail=f"Endpoint disabled: {key_env} is not configured.")
     if not provided or not secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Internal-CAO-Key header.")
+        raise HTTPException(status_code=401, detail=f"Invalid or missing {header} header.")
+
+
+def require_coo_key(provided: str | None) -> None:
+    """The COO endpoint's gate: INTERNAL_COO_KEY in the X-Internal-COO-Key header. Fails closed (503) if unset."""
+    require_internal_key(provided, COO_KEY_ENV, COO_KEY_HEADER)
 
 
 def require_actor(value: str | None, header: str, *, required: bool) -> str:
