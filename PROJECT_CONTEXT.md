@@ -263,7 +263,7 @@ Symptom: pages return 200 but look unstyled (white background, plain left-aligne
 
 ### Code map
 - `backend/app/agents/base_constitution.py`: `EXECUTIVE_CONSTITUTION` (Clause 0 + Clauses 1-15) and `build_system_prompt(agent_prompt, extra="")`. The constitution is PREPENDED, so an agent's own prompt can add a role but never sit above it. `tests/test_governance.py` pins the clause numbers, titles and key wording.
-- `backend/app/agents/registry.py`: the roster (`cao` and `coo` available; the CTO is not built). Add a new agent here.
+- `backend/app/agents/registry.py`: the roster (`cao`, `coo` and `cto` available). Add a new agent here.
 - `backend/app/agents/cross_validation.py`: `cross_check(agent_a_id, agent_b_id, query, context)`.
 - `backend/app/governance/`: `db.py` (pg8000, pure Python), `scoring.py`, `audit.py`, `kill_switch.py`, `rate_limit.py`.
 - `backend/app/api/`: `security.py` (shared key check), `cao.py` (`POST /api/cao`, moved out of `main.py` in Phase 1 of the AI Executive Team), `cross_check.py`, `admin/agents/reset.py`. Routers are mounted in `main.py`.
@@ -487,4 +487,113 @@ Registry, prompt (all ten pillars present and in order, each pillar's topics, th
 - Pillar 9 words requests but sends none. Nothing is automatic between the agents yet.
 - Code checks the SHAPE of the output (complete, numeric, 0-100), not whether numbers or verdicts are sensible, and the constitutional score is still only a surface check.
 - Answers are long and slow (about one minute) and cost more per call than a short answer.
+
+
+## 14. Phase 3: AI_CTO Agent (13-Pillar Technical Expert & Security Sentinel)
+
+**Scope.** Third phase of the AI Executive Team build. It adds the AI_CTO, the technical expert and security sentinel. The Council Protocol and the Living Console are NOT built, and the frontend is untouched. The CAO's and COO's code was not changed (both are live in production); the CTO reuses their parser and output contract.
+
+**Where the three differ.** The CAO sets strategy. The COO tests cost, cash and execution. The CTO answers "is it technically sound, secure and maintainable, and how exactly would it be built or changed", and watches the integrity of the system. All three advise a human and none can act (Clause 0).
+
+### Code map
+- `backend/app/prompts/cto_prompt.py`: `CTO_SYSTEM_PROMPT` (role, the 13 pillars, the Authorization Workflow) and `CTO_REASONING_PROMPT` (the output format).
+- `backend/app/agents/cto_agent.py`: `get_cto_result()` and `get_cto_answer()`. The constitution is prepended first via `build_system_prompt`, as for the CAO and COO.
+- `backend/app/agents/cto_authorization.py`: validates and hardens the `authorization_request` IN CODE (see below).
+- `backend/app/api/cto.py`: `POST /api/cto`. `CTOResponse` inherits from the CAO's `CAOResponse` and adds one field, so the shared fields cannot drift.
+- `backend/app/agents/registry.py`: `cto` points at `app.agents.cto_agent:get_cto_answer`. Cross-validation and the kill switch work for it with no other change.
+- `backend/app/api/security.py`: new `require_cto_key()`. The CAO and COO gates are unchanged.
+- `backend/app/agents/cao_reasoning.py`: one line added (`load_json_object`, a public name for the existing JSON loader). No behaviour changed.
+- `backend/tests/test_cto_agent.py`: the Phase 3 tests.
+
+### Access and keys
+- `POST /api/cto` requires `INTERNAL_CTO_KEY` in the **`X-Internal-CTO-Key`** header. The key is checked before anything else, so an unauthenticated caller can never cause a model call. If `INTERNAL_CTO_KEY` is unset on the server the endpoint answers 503 (closed).
+- **All three keys are separate.** The CAO and COO keys do not open `/api/cto`, and the CTO key does not open `/api/cao`, `/api/coo`, `/api/agents/cross-check` or the kill switch (those stay on `INTERNAL_CAO_KEY`). Tests pin every pairing.
+- `X-User-Id`, `history` and `reset_epoch` behave exactly as for the CAO and COO (kill switch, Clause 15).
+
+### Response of `POST /api/cto`
+The CAO's and COO's shape PLUS `authorization_request`: `response`, `reply` (same text), `reasoning_chain`, `scenarios` (or `null`), `pre_consultation_requests` (always `null` values, forced in code), `authorization_request` (or `null`), `constitutional_score`, `needs_review`, `audit_id`, plus `reset_epoch`, `history_discarded`, `sources`. Every answer is recorded with `audit.record_response('cto', ...)` as agent `cto`. A CTO change request is stored whole in the new `AgentAuditLog.authorizationRequest` column (migration `add_authorization_request_to_audit_log`, see "Database" under the Authorization Workflow).
+
+### The thirteen pillars
+| # | Pillar | What the prompt asks the CTO to do |
+|---|---|---|
+| 1 | System Architecture and Infrastructure | Boundaries, failure domains, single points of failure, scaling limits; state each option's trade-off |
+| 2 | Code Generation and Optimization | Code only as TEXT for review; match existing conventions; flag any new dependency; say how it is tested |
+| 3 | Bug Detection and Resolution | Work from pasted evidence; likely causes and the cheapest check to tell them apart; minimal fix plus a regression test |
+| 4 | Performance Monitoring and Tuning | Measure before tuning; find the bottleneck; no benchmark numbers it was not shown |
+| 5 | Security and Vulnerability Management | Attack surface, ranked findings with fix and verification, least privilege, key rotation, never put a secret in an answer |
+| 6 | Deployment and DevOps Automation | Rollback before the first command; knows a push to `main` auto-deploys; migrations via `prisma migrate deploy` first |
+| 7 | Database Optimization | Query and plan first; index and schema trade-offs; pool size from the real connection limit; destructive changes only via an authorization request |
+| 8 | API Design and Integration | Contracts, versioning, backward compatibility, retries, failure modes |
+| 9 | Technical Documentation | Documentation a new engineer could use, never overstating a capability |
+| 10 | Maintenance Automation | Updates, backups, restore tests, key expiry; automation a human can review and stop |
+| 11 | Collaboration with Human and Cline | Instructions Cline could follow exactly; nothing connected to Cline; a human approves first |
+| 12 | Cybersecurity and System Integrity Guardian | See below |
+| 13 | User Technical Support and Navigation Guide | Contextual help, troubleshooting, a feedback loop; never invents a page or asks for a secret |
+
+### Pillar 12: the sentinel (what it is and is not)
+- **Threat detection** from what it is shown (logs, request samples, alerts, a diff). **Anomaly scoring** 0-100 with a one-line reason: 0-39 normal or low, 40-69 suspicious, 70-89 likely hostile, 90-100 critical.
+- **Response protocols are proposals, never actions:** FLAG (40-69), AUTO-BLOCK as a PROPOSAL with a rollback (70+), ESCALATE (90+, or exposed secrets, data loss, or compromise of the audit log or kill switch) beginning with `ESCALATE TO HUMAN:`.
+- **It is NOT an intrusion-detection system.** It sees no live traffic, cannot block or quarantine anything, and the score is a labelled judgement, not a measurement. Treat "auto-block" as "recommends a narrow block for a human to apply".
+
+
+### The Authorization Workflow (code and system changes)
+**The rule: the CTO never executes anything.** It has no tools, shell, repository write access, deploy access or database access. For any request that involves changing code, configuration, the database or schema, infrastructure, deployments, access, keys or secrets, it outputs a structured `authorization_request` for a human instead of acting:
+
+| Field | Meaning |
+|---|---|
+| `action_summary` | What would change, in one or two sentences |
+| `risk_level` | `low`, `medium`, `high` or `critical` |
+| `impact` | What is affected, what could break, whether it is reversible |
+| `proposed_code_diff` | A diff or code as TEXT for review (or `null`) |
+| `proposed_commands` | Exact commands as TEXT for a human (or Cline, once approved) to run |
+| `rollback_plan` | How to undo it |
+| `status` | Always `pending_human_approval` (forced) |
+| `requires_human_approval` | Always `true` (forced) |
+| `executed` | Always `false` (forced) |
+
+`authorization_request` is `null` when no change is requested (a question, a review, a threat assessment). A request needs at least a diff or commands, otherwise it is dropped and the CTO is expected to ask for what it needs instead.
+
+**What CODE enforces (`cto_authorization.py`), whatever the model writes:**
+- `status`, `requires_human_approval` and `executed` are forced to the values above, so a request can never claim to be approved or executed. The API model uses `Literal` types, so the contract itself refuses anything else.
+- A missing or unknown `risk_level` becomes `high`, never `low`.
+- **A risk floor from the proposed text:** destructive commands (`DROP TABLE`, `TRUNCATE`, `DELETE FROM` with no `WHERE`, `prisma migrate reset`, `git push --force`, `git reset --hard`, `rm -rf /`) force `critical`. Migrations, `git push`, installs, anything touching secrets or production deploys force at least `high`. Any diff or `git commit` forces at least `medium`. The floor only RAISES a level, never lowers one.
+- Lengths are capped, and a cut-off reply never yields a half-built request (the human is told to ask again).
+
+**What it does NOT do:**
+- **There is no approve or execute endpoint.** A human reads the request and acts outside the system (or directs Cline). Nothing in the platform applies it.
+- The floor is a keyword check. It will miss a risky change that does not look risky in text, and it does not prove a diff is correct. A human must read the diff (Clause 0).
+- **Nothing applies the request.** It is returned by the API AND stored whole in `AgentAuditLog.authorizationRequest` (see "Database" below), which is the source for the future "Pending Authorizations" view. A plain-text summary block ("AUTHORIZATION REQUEST (pending human approval; nothing has been executed)", with action, risk, impact and commands, but no diff) is also appended to the response text, so the stored `response` is readable on its own.
+
+### Database (migration `add_authorization_request_to_audit_log`)
+`AgentAuditLog` gained one nullable column, `authorizationRequest JSONB`. It holds the CTO's full validated request (`action_summary`, `risk_level`, `impact`, `proposed_code_diff`, `proposed_commands`, `rollback_plan`, `status`, `requires_human_approval`, `executed`). It is SQL `NULL` for every CAO and COO row, for CTO answers that propose no change, and for older rows. The diff and commands are stored as text for review; nothing runs them. The change is additive and does not touch existing rows. `humanAction` (`Pending` / `Approved` / `Modified` / `Rejected`) is still where a human's decision on the request would be recorded, and nothing sets it yet.
+
+**Deploy order, and why it is safe either way.** `audit._record_sync` names the `authorizationRequest` column in the INSERT ONLY when a request exists. Every other answer (all CAO and COO answers, and CTO answers with no change) is written exactly as before. So if the backend deploys before `prisma migrate deploy` has been run on Neon, the CAO and COO keep being audit-logged. Only a CTO change request needs the column: until Neon is migrated its audit insert fails, `audit_id` comes back `null`, and the answer and the request still reach the human (the failure is logged). Run `npx prisma migrate deploy` from `frontend/` against Neon promptly to close that gap.
+
+
+### Structured to support the future Council Protocol
+- **The first four fields are identical for all three executives**, parsed by the same agent-neutral `cao_reasoning.parse_cao_output`. `tests/test_cto_agent.py` pins the CTO's example JSON to the CAO's, so a change to one without the other fails a test.
+- **Cross-validation works in every direction.** `cross_check` can now ask the real CTO to review the CAO or COO (technical feasibility), or the reverse. Reviews run with RAG off and audit off, and a verdict never creates an authorization request.
+- `pre_consultation_requests` stays forced to `null` (`PRE_CONSULTATION_ENABLED = False`). Nothing is sent to any agent. The CTO is not fed the CAO's or COO's output automatically, so **a caller must paste it into the message**. The Council Protocol will wire that.
+
+### Config
+`render.yaml` and `backend/.env.example` now carry `CTO_MODEL`, `CTO_MAX_TOKENS` (16384) and `INTERNAL_CTO_KEY`. **`INTERNAL_CTO_KEY` must be set on Render** (a random 64-character hex string, different from the other two) or `/api/cto` answers 503. A value set by hand in the Render dashboard overrides `render.yaml`. `backend/.env` has no `INTERNAL_CTO_KEY` yet; add one before any local call that uses a real key.
+
+### Tests (`backend/tests/test_cto_agent.py`, 75)
+Registry, prompt (all thirteen pillars present and in order, each pillar's topics, the sentinel's limits, "no tools", the mandatory authorization workflow), the shared-contract tests, the authorization normaliser (forced status, risk floor, fail-safe risk, dropped empty requests, caps, no raising), and `/api/cto` with a MOCKED model asked "Optimize our database connection pooling." (full shape, chain, three scenarios, null pre-consultation, null authorization request).
+
+A mocked code-change request returns an `authorization_request` and NOT executed code, even when the mock model claims it is approved, executed and low-risk, or proposes a force push. A cut-off request is never recovered. Key gating is tested in every pairing (401, 503), the real CTO is tested as a cross-check reviewer, and the audit row is checked.
+
+**The `authorizationRequest` column is tested both ways.** With a change request the column holds the FULL hardened request (status forced to pending, risk raised by the floor, the whole diff and commands intact, and equal to what the API returns). It is SQL `NULL` for a technical answer with no change, a plain-text answer, a request the code dropped, a cut-off request, and the CAO/COO-style call. A further test proves a row with no request does not name the new column in its INSERT (the deploy-order safety above), and mutation-checking confirmed these tests fail if the CTO stops passing the request to the audit log.
+
+The database-backed class runs ONLY against a localhost database, writes under the agent id `testbot` and deletes its rows. Agent id `cto` is proven by a test of the call `audit.record_response('cto', ...)`. Whole backend suite: 342 OK (267 before Phase 3, 332 before the `authorizationRequest` column was added).
+
+### Honest limits (DO NOT OVERSTATE)
+- **The unit tests mock the model.** Separately, the CTO was run live against the real model locally, three times. It has NOT been run on Render, and nobody has seen it on a real incident, a real codebase or real logs.
+- **Live findings.** Given the bare query "Optimize our database connection pooling.", the real model asked one clarifying question and returned no scenarios and no request. That is correct under the prompt, but the brief's example does not by itself produce a full answer. Given "Change the connection pool size ... apply it to production" with no code, it escalated and refused to invent a diff. Given a real file snippet plus the change request, it returned a complete answer with chain, three scenarios and a pending `authorization_request`. The model rated that request `medium` and the code raised it to `high`, so the code floor changed a real result.
+- **No live access.** The CTO cannot see the repository, servers, logs or metrics unless text is pasted. Its prompt says so, and tells it never to invent a file, metric or version. What it says about this platform is a briefing from its prompt, not a live view, and can go stale.
+- **The sentinel is a reviewer of pasted evidence, not a security system.** Nothing feeds it traffic, and no component can block anything on its say-so.
+- **No approval step exists in the product.** The authorization workflow stops at "a human reads this". Until an approval endpoint or UI is built (a decision for a later phase), approval is a manual, off-system act. `AgentAuditLog.humanAction` stays `Pending` and nothing marks a CTO request approved.
+- **A pending request is not yet queryable as "pending".** `authorizationRequest.status` is always `pending_human_approval` at write time and nothing ever updates it, so "pending" is currently decided by `humanAction = 'Pending'` on a row whose `authorizationRequest` is not null. Do not read `status` inside the JSON as the live state; it records what the CTO proposed, not what a human decided.
+- Code checks the SHAPE and enforces the safety rules above, not whether a diff is correct, and the constitutional score is still only a surface check.
+- Answers are long and slow (roughly 25 to 60 seconds) and cost more than a short answer.
 

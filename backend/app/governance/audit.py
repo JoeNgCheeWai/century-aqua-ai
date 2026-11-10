@@ -42,32 +42,45 @@ def _record_sync(
     reasoning_chain: list[str],
     scenarios: dict[str, Any] | None,
     pre_consultation_requests: dict[str, Any] | None,
+    authorization_request: dict[str, Any] | None = None,
 ) -> int:
     """One transaction: insert the audit row, update the agent's rolling buffer and violation count."""
     violation = 1 if score.needs_review else 0
     entry = {"at": now.isoformat(), "userId": user_id, "query": _clip(query)[:2000], "reply": _clip(response)[:4000]}
+
+    columns = (
+        '"agentId","userId","query","response","constitutionalScore","sourcesCited",'
+        '"reasoningChain","scenarios","preConsultationRequests"'
+    )
+    placeholders = "%s,%s,%s,%s,%s,%s,CAST(%s AS text[]),CAST(%s AS jsonb),CAST(%s AS jsonb)"
+    values: list[Any] = [
+        agent_id,
+        user_id,
+        _clip(query),
+        _clip(response),
+        score.score,
+        sources,
+        # Written as a Postgres array literal: a Python [] has no element type for the driver to infer.
+        db.text_array_param(reasoning_chain),
+        # SQL NULL (not the JSON value null) when there are no scenarios.
+        None if scenarios is None else db.json_param(scenarios),
+        None if pre_consultation_requests is None else db.json_param(pre_consultation_requests),
+    ]
+    # The authorizationRequest column is named in the INSERT ONLY when there is a request (a CTO change
+    # request). Every other row (all CAO and COO answers) is written exactly as before, so those agents keep
+    # being audit-logged even if the backend is deployed before the database migration that adds this column.
+    # Only a CTO change request needs the column to exist. The omitted column is SQL NULL by default.
+    if authorization_request is not None:
+        columns += ',"authorizationRequest"'
+        placeholders += ",CAST(%s AS jsonb)"
+        values.append(db.json_param(authorization_request))
+    columns += ',"humanAction","timestamp"'
+    placeholders += ',CAST(%s AS "HumanAction"),%s'
+    values += ["Pending", db.naive_utc(now)]
+
     with db.transaction() as conn:
         cur = conn.cursor()
-        cur.execute(
-            'INSERT INTO "AgentAuditLog" ("agentId","userId","query","response","constitutionalScore","sourcesCited",'
-            '"reasoningChain","scenarios","preConsultationRequests","humanAction","timestamp") '
-            "VALUES (%s,%s,%s,%s,%s,%s,CAST(%s AS text[]),CAST(%s AS jsonb),CAST(%s AS jsonb),CAST(%s AS \"HumanAction\"),%s) RETURNING id",
-            (
-                agent_id,
-                user_id,
-                _clip(query),
-                _clip(response),
-                score.score,
-                sources,
-                # Written as a Postgres array literal: a Python [] has no element type for the driver to infer.
-                db.text_array_param(reasoning_chain),
-                # SQL NULL (not the JSON value null) when there are no scenarios.
-                None if scenarios is None else db.json_param(scenarios),
-                None if pre_consultation_requests is None else db.json_param(pre_consultation_requests),
-                "Pending",
-                db.naive_utc(now),
-            ),
-        )
+        cur.execute(f'INSERT INTO "AgentAuditLog" ({columns}) VALUES ({placeholders}) RETURNING id', tuple(values))
         audit_id = cur.fetchone()[0]
         # Create the agent's state row on first use, then append to its bounded buffer.
         cur.execute(
@@ -97,6 +110,7 @@ async def record_response(
     reasoning_chain: list[str] | None = None,
     scenarios: dict[str, Any] | None = None,
     pre_consultation_requests: dict[str, Any] | None = None,
+    authorization_request: dict[str, Any] | None = None,
 ) -> tuple[int | None, Score]:
     """
     Score and record one response. Returns (audit_id or None, score).
@@ -106,6 +120,10 @@ async def record_response(
     ``reasoning_chain``, ``scenarios`` and ``pre_consultation_requests`` are the CAO's
     Phase 1 structured output. All are optional so other agents can log without them:
     an absent chain is stored as an empty array and absent JSON as SQL NULL.
+
+    ``authorization_request`` is the CTO's Authorization Workflow object (Phase 3), stored whole in
+    AgentAuditLog.authorizationRequest so a human-approval view can read it. It is None for every
+    answer that proposes no change, which stores SQL NULL (the column is then not even named in the INSERT).
     """
     score = score or score_response(response)
     when = now or datetime.now(timezone.utc)
@@ -125,6 +143,7 @@ async def record_response(
             list(reasoning_chain or []),
             scenarios,
             pre_consultation_requests,
+            authorization_request,
         )
         if score.needs_review:
             logger.warning("audit: %s response scored %s (< %s): %s", agent_id, score.score, REVIEW_THRESHOLD, "; ".join(score.findings))

@@ -102,9 +102,10 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(registry.spec("cao").answer_path, "app.agents.cao_agent:get_cao_answer")
         self.assertNotEqual(registry.spec("cao").key_env, registry.spec("coo").key_env)
 
-    def test_the_cto_is_not_built(self):
-        self.assertFalse(registry.is_known("cto"))
-        self.assertEqual(set(registry.AGENTS), {"cao", "coo"})
+    def test_the_executive_roster_is_the_cao_coo_and_cto_only(self):
+        # The CTO was added in Phase 3. Nothing beyond the three executives is registered.
+        self.assertEqual(set(registry.AGENTS), {"cao", "coo", "cto"})
+        self.assertFalse(registry.is_known("cfo"))
 
 
 class PromptTests(unittest.TestCase):

@@ -24,13 +24,16 @@ from app.api.admin.agents.reset import router as reset_router
 from app.api.cao import router as cao_router
 from app.api.coo import router as coo_router
 from app.api.cross_check import router as cross_check_router
+from app.api.cto import router as cto_router
 
 app = FastAPI(title="Century Aquaculture Intelligence Platform (CAIP)")
 
 # AI_CAO (internal only, POST /api/cao) and the constitutional governance endpoints are
-# gated by INTERNAL_CAO_KEY. AI_COO (internal only, POST /api/coo) has its own INTERNAL_COO_KEY.
+# gated by INTERNAL_CAO_KEY. AI_COO (internal only, POST /api/coo) has its own INTERNAL_COO_KEY,
+# and AI_CTO (internal only, POST /api/cto) has its own INTERNAL_CTO_KEY.
 app.include_router(cao_router)
 app.include_router(coo_router)
+app.include_router(cto_router)
 app.include_router(cross_check_router)
 app.include_router(reset_router)
 

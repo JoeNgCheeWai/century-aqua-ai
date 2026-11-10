@@ -159,6 +159,13 @@ model AgentAuditLog {
   scenarios               Json?
   // {coo_query, cto_query}. Structure only for now: nothing consumes it until the Council Protocol.
   preConsultationRequests Json?
+  // The AI_CTO's Authorization Workflow (Phase 3): a proposed code or system change waiting for a human,
+  // {action_summary, risk_level, impact, proposed_code_diff, proposed_commands, rollback_plan, status,
+  // requires_human_approval, executed}. NULL for every row that is not a CTO change request (all CAO and COO
+  // rows, CTO answers that propose no change, and rows written before this field existed). status is always
+  // "pending_human_approval" and executed always false when written (forced in backend/app/agents/cto_authorization.py).
+  // This is the source for the future "Pending Authorizations" view; humanAction below is the human's decision on it.
+  authorizationRequest    Json?
   humanAction             HumanAction @default(Pending)
   timestamp               DateTime    @default(now())
 

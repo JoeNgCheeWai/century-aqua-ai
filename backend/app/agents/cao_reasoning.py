@@ -213,3 +213,7 @@ def parse_cao_output(raw: str) -> ParsedAnswer:
         findings=findings,
     )
 
+
+
+# Public name for agents that add their own fields to the shared JSON object (the CTO's authorization_request).
+load_json_object = _load_json_object
