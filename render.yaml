@@ -42,6 +42,14 @@ services:
         sync: false          # secret; required to enable the internal-only /api/council endpoints (64-char hex, different from the agent keys)
       - key: COUNCIL_MODEL
         value: claude-sonnet-5-5
+      # Phase 6 Mission Control: ADMIN_PIN and ADMIN_SESSION_SECRET are read by the Next.js FRONTEND (Vercel), not by this
+      # backend. They are listed here as the project's record of every secret; set the same two on the frontend host.
+      # The backend's Mission Control endpoints (/api/audit-logs, /api/authorization/*, /api/council/sessions) use
+      # INTERNAL_COUNCIL_KEY above. ADMIN_PIN: the login PIN (6+ chars). ADMIN_SESSION_SECRET: 64-char hex that signs the cookie.
+      - key: ADMIN_PIN
+        sync: false          # secret; the Mission Control login PIN (frontend host)
+      - key: ADMIN_SESSION_SECRET
+        sync: false          # secret; random 64-char hex signing the Mission Control session cookie (frontend host)
       - key: GOVERNANCE_DATABASE_URL
         sync: false          # secret; the Neon URL. Enables the audit log, agent state and kill switch
       - key: PINECONE_API_KEY

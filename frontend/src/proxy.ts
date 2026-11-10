@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { clerkConfigured } from "@/lib/clerk-config";
+import { SESSION_COOKIE } from "@/lib/mc-auth";
+import { mcArea, mcGate } from "@/lib/mc-gate";
 import { refusal, staffArea, staffGate } from "@/lib/staff-gate";
 
 // Makes Clerk's auth() available to pages and route handlers, and is the FIRST of
@@ -11,8 +13,13 @@ import { refusal, staffArea, staffGate } from "@/lib/staff-gate";
 // under app/internal and app/admin check again, so this is never the only lock.
 // If the Clerk keys are missing the staff areas are closed completely (503)
 // and the rest of the public site keeps working.
+//
+// MISSION CONTROL (Phase 6) is a third, separate area: /mission-control/* and /api/mc/*. It does NOT use Clerk: it is
+// locked by the PIN session cookie (see lib/mc-auth.ts), so it works even where Clerk is not configured. It is checked
+// here first, and every /api/mc handler checks the cookie again.
 
 const clerkProxy = clerkMiddleware(async (auth, request) => {
+  if (mcArea(request.nextUrl.pathname)) return mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value);
   // Only staff-area paths need the (database) check; everything else passes straight through.
   if (!staffArea(request.nextUrl.pathname)) return;
   const { userId } = await auth();
@@ -22,6 +29,9 @@ const clerkProxy = clerkMiddleware(async (auth, request) => {
 export default clerkConfigured
   ? clerkProxy
   : (request: NextRequest) => {
+      if (mcArea(request.nextUrl.pathname)) {
+        return mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value) ?? NextResponse.next();
+      }
       const area = staffArea(request.nextUrl.pathname);
       if (area) return refusal(503, area, request.nextUrl);
       return NextResponse.next();

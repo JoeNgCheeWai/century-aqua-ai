@@ -805,7 +805,97 @@ No database and no real model: a scripted fake model stands in for Anthropic, an
 - **Loop and drift detection is coarse.** A loop is "the same conflict still open after 2 revisions", and drift is the COO's `on_topic` ruling. Confidence collapse relies on the confidence numbers the models state, which are the models' own judgement, not statistics.
 - **The cost ceiling is per session, not per day.** There is no daily or per-user budget, and the concurrency cap is in memory, so it resets on a restart and would not hold across multiple instances.
 - **A session in flight is lost on a restart** (and reported as `FAILED`, orphaned by restart after 5 minutes). Nothing resumes it.
-- **No approval step exists** (as for the CTO and CMO). `humanAction` stays `Pending`. Approval is a manual, off-system act.
-- **Not reachable from the browser.** `/api/council` is not proxied by Next.js. A staff-only wrapper is Phase 6.
+- **No approval step existed in Phase 5** (as for the CTO and CMO). `humanAction` stayed `Pending`. Phase 6 adds one for the CTO and CMO authorization requests (section 17); it records a decision and still executes nothing. Council sessions themselves have no approve step.
+- **Not reachable from the browser in Phase 5.** `/api/council` is still not proxied as such: Phase 6 reaches it only through server-side route handlers under `/api/mc/*` (section 17).
 - **`PRE_CONSULTATION_ENABLED` is still `False`.** The CAO's `pre_consultation_requests` stay null in solo answers; the council does not use them.
+
+
+
+---
+
+## 17. Phase 6: Living Mission Control Console
+
+A web console at **`/mission-control`** to talk to the four executives, convene the council, decide the authorization requests the CTO and CMO raise, and browse the audit log. It is a Next.js app (the existing `frontend/`) with a Tailwind dark theme, plus three small backend APIs.
+
+### Architecture (read this first)
+```
+browser --(PIN cookie)--> Next.js  /mission-control/*  (pages)
+                          Next.js  /api/mc/*           (route handlers: the ONLY place a backend key is used)
+                              |  adds INTERNAL_*_KEY headers, server-side
+                              v
+                          FastAPI (Render)  /api/cao|coo|cto|cmo  /api/council  /api/audit-logs  /api/authorization/*  /api/council/sessions
+```
+- **The browser never holds a backend key.** It only calls `/api/mc/*` on its own origin. The route handlers read the keys from the server environment. This is also why `next.config.ts` still proxies nothing but `/api/health`.
+- **Paths are under `/mission-control`, not `/dashboard`.** `/` is the public homepage and `/dashboard` is the existing Clerk subscriber dashboard, so the spec's `frontend/app/dashboard` would have collided. Pages live in `frontend/src/app/mission-control/` (the repo uses `src/app`, not `app`).
+- **No Clerk.** Mission Control is a separate area from `/internal` and `/admin`. It is locked by its own PIN cookie and works even where Clerk is not configured.
+
+### Backend APIs (all gated by `INTERNAL_COUNCIL_KEY`, header `X-Internal-Council-Key`, checked first)
+The council key doubles as the admin key. It is still a different key from every agent key: no agent key opens these endpoints, and the council key opens no agent endpoint (tests pin every pairing, and the live Render run in Phase 5 confirmed it). 503 if the key is unset.
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/audit-logs` | Paginated `AgentAuditLog`, newest first. Params: `agent_id`, `start_date`, `end_date`, `limit` (1-200, default 50), `offset`, plus `human_action`, `has_authorization`, `search`. Returns `{items, total, limit, offset}`; each item is the full record (response, reasoning chain, scenarios, authorization request, decision). |
+| `POST /api/authorization/{audit_id}/approve` and `/reject` | Sets `humanAction` to `Approved` or `Rejected`, and records `humanActionAt` and `humanActionBy`. Only for a row whose `authorizationRequest` is not null AND whose `humanAction` is `Pending` (else 409; unknown id 404). **`X-Admin-Id` is required** (who decided), like the kill switch. |
+| `GET /api/council/sessions` | Paginated `CouncilSessionLog` summaries. Params: `status`, `limit` (1-100, default 20), `offset`. Returns `{items, total, limit, offset}`: query (cut at 400 chars), status, participating agents, times, model calls, tokens, option count, escalation reason. Applies the 5-minute orphan rule to stale `RUNNING` rows. |
+
+Files: `backend/app/api/audit_logs.py`, `authorization.py`, `council_sessions.py`; SQL in `backend/app/governance/admin_store.py`; registered in `main.py`.
+
+**Design decisions that differ from the brief (on purpose):**
+1. **The spec said "updates timestamp" on approve and reject. `AgentAuditLog.timestamp` is NOT touched.** It is when the agent answered, part of the Clause 6 accountability record. The decision time goes in a new column, `humanActionAt` (and `humanActionBy`). The migration is `frontend/prisma/migrations/20261110160000_add_human_action_audit`.
+2. **Approving executes NOTHING.** The backend has no execution tools. Approve and reject record a human decision; a person still carries out the change. Every response says `executed: false`, and a test checks the module has no way to run anything.
+3. **A decision is final** (409 on a second one) and is one atomic `UPDATE ... WHERE humanAction='Pending' AND authorizationRequest is an object`, so two people clicking at once cannot both win (tested).
+4. **`GET /api/council/sessions` is registered BEFORE `/api/council/{session_id}`** in `main.py`; otherwise "sessions" is read as a session id. A test pins the order.
+5. **The lists return `{items, total, limit, offset}`, not a bare array**, because a UI cannot page without a total.
+6. **Reads use `SELECT *`**, so the audit log and the sessions list keep working on a database that lacks the new migration. Only approve and reject need it (503 with a migration hint until applied).
+
+
+### Frontend pages (`frontend/src/app/mission-control/`)
+| Page | Path | What it does |
+|---|---|---|
+| Login | `/mission-control/login` | PIN form. Public. Sets the session cookie. |
+| Dashboard | `/mission-control/dashboard` | One card per agent (last activity, answers on record, "Ask" button), the pending-authorization counter, the five latest council sessions. Refreshes every 30 s by polling. |
+| Agent query | `/mission-control/agents/{cao\|coo\|cto\|cmo\|council}` | Chat with one agent: shows the answer, reasoning chain, three scenarios, and any authorization request. The `council` tab convenes a session: **POST returns 202 with a `session_id`, then the page polls every 3 s** until the status is terminal, with a progress timer, then shows the options. |
+| Council list | `/mission-control/council` | All sessions, filter by status, paged. |
+| Council session | `/mission-control/council/{sessionId}` | Tabs: **Outcome** (the 2-3 options with supporters, dissent, assumptions, unresolved objection, COO red-team failure mode; open questions), **Debate** (participants, each round's turns, COO moderation notes, conflict matrix, vetoes, dissent record), **Audit trail**. |
+| Authorizations | `/mission-control/authorizations` | Pending / Approved / Rejected tabs. Each request shows the action, risk level, impact, and the code diff (CTO) or the content and the claims to verify (CMO). Approve and Reject need a second click ("Yes, approve") because a decision is final. |
+| Audit log | `/mission-control/audit` | Search, filter by agent, decision, has-a-request and date range, paged, expand any entry for its full record. |
+
+Browser-facing route handlers (all under `frontend/src/app/api/mc/`, each checks the cookie first): `login`, `logout`, `overview`, `agents/[agentId]`, `council`, `council/sessions`, `council/[sessionId]`, `audit-logs`, `authorization/[auditId]/[action]`.
+
+### Authentication (simple PIN, internal use)
+- `POST /api/mc/login {pin}` compares the PIN with **`ADMIN_PIN`** in constant time and, on success, sets an **httpOnly, SameSite=Strict, Secure (in production)** cookie `mc_session` that lives 8 hours. The cookie is `v1.<expiry>.<nonce>.<HMAC-SHA256>`, signed with **`ADMIN_SESSION_SECRET`**.
+- **Why two secrets:** a PIN is short, so it must not be the signing key (anyone holding one cookie could brute-force it offline and forge cookies). `ADMIN_SESSION_SECRET` is a long random value (64 hex chars). Changing it signs everyone out.
+- **Two locks:** `src/proxy.ts` (Next 16's name for middleware) refuses every request to `/mission-control/*` and `/api/mc/*` without a valid cookie (pages redirect to login with `?next=`, API calls get 401), and **every `/api/mc` handler checks the cookie again** (`requireSession()` in `src/lib/mc-session.ts`), so no handler depends on the proxy alone.
+- **Fails closed:** if either value is missing or too short, login answers 503 and everything private answers 503.
+- **Wrong guesses are throttled:** 5 wrong PINs lock a caller out for 15 minutes. `?next=` is only honoured for a path inside `/mission-control` (no open redirect; dot segments are refused).
+- Logic lives in `src/lib/mc-auth.ts` (no Next imports, so it is unit-tested directly).
+
+### Deploying Phase 6
+1. **Apply the migration to Neon**: `prisma migrate deploy` from `frontend/` (adds `AgentAuditLog.humanActionAt` and `humanActionBy`). Until then approve/reject answer 503; everything else works.
+2. **Redeploy the backend** (Render, auto-deploy on push). Nothing new to configure there: the three endpoints use the existing `INTERNAL_COUNCIL_KEY`.
+3. **Set these on the FRONTEND host (Vercel)**, server-side only (not `NEXT_PUBLIC_`): `ADMIN_PIN` (6+ chars), `ADMIN_SESSION_SECRET` (64 hex chars), `BACKEND_URL` (the Render URL), and `INTERNAL_COUNCIL_KEY`, `INTERNAL_CAO_KEY`, `INTERNAL_COO_KEY`, `INTERNAL_CTO_KEY`, `INTERNAL_CMO_KEY` (the same values as on Render). `render.yaml` and both `.env.example` files list `ADMIN_PIN` and `ADMIN_SESSION_SECRET` as the project's record of its secrets, but **the backend ignores them**: they belong to the frontend host.
+4. This puts all five backend keys on the frontend host. That is the cost of the console calling the agents. They never reach a browser, but anyone who can read the Vercel environment can read them.
+
+
+### How Phase 6 was tested
+- **Backend (`backend/tests/test_mission_control_api.py`, 38 tests):** date bounds and LIKE escaping; every endpoint needs the council key, no agent key opens any (in any header), the council key opens no agent endpoint, an unset key gives 503, and nothing touches the database before the key is checked; filters, paging, validation (422), 404/409 mapping, and the route order; plus the REAL SQL against the LOCAL database only (filters, ordering, paging, totals, search wildcards, the decision rules, that `timestamp` is untouched, a decision is final, a JSON `null` is not a request, two simultaneous decisions cannot both win, the orphan rule). The real-SQL group skips with a message unless the local database has the migration. All 38 passed with it applied locally (7 skipped before it was).
+- **Frontend unit tests (`frontend/scripts/mission_control_auth.test.mjs`, 14 tests, `node --test`):** the token (expiry, tampering, wrong secret, malformed input), the PIN check, path matching (encoding, slashes, case), the access decision, the open-redirect rule and the lockout. Writing them found a real bug: `?next=/mission-control/../admin` would have escaped Mission Control. Fixed.
+- **End to end over real HTTP (`frontend/scripts/mission_control_flow.check.mjs`, run by hand):** against a locally started backend and the production build (`next build` then `next start`). All pages redirect without a cookie, every `/api/mc` route is 401 without one, a forged cookie is refused, the cookie flags are right, the pages open with the cookie, the proxy reaches the backend (overview, audit filters, sessions, 404 and 422 passed through), input validation, logout. **48 checks passed.**
+- **Decisions and the real model path (local):** with seeded rows, approve and reject worked, the second decision was refused with 409, the agent's original timestamp was unchanged, and a row with no request was refused (18 checks). One real CAO question and one real council session (the Phase 5 shrimp query) went through the proxy: 202, then polling reached `RESOLVED` in about 33 s with 3 options, and both appeared in the console's data. (An earlier run with a shorter query ended `NEEDS_CEO_INPUT`, which is the protocol working as designed, not a fault.)
+- `tsc`, `eslint` and `next build` are clean. The seeded rows were removed afterwards.
+
+### Honest limits (DO NOT OVERSTATE)
+- **Verified locally only.** Nothing in Phase 6 has been run on Render, Vercel or Neon. **The browser UI itself (clicking, layout, the polling timer on screen) has NOT been looked at in a real browser.** What was tested is the build, the types, the lint, the HTTP flow, and the API behind every page. Open it and click through before relying on it.
+- **The Neon migration `add_human_action_audit` is not applied.** It was applied to the LOCAL database only.
+- **Vercel may cut a long agent answer short.** An executive answer is one long model call (20 s to over a minute). `maxDuration` is 300 on that route, but a lower plan limit wins. The council does not have this problem (it is async). If an agent answer times out, the page shows the error.
+- **The login lockout is in memory.** On a serverless host each instance counts separately, so it is a speed bump for a private tool, not a hard limit. A 6-character PIN is weak. There is one shared PIN and no accounts: every decision is attributed to the fixed id `mission-control`, not to a person. Multi-user support is out of scope.
+- **The council key is now an admin key.** Whoever has it can read the whole audit log and record approve and reject decisions. It was a narrower key in Phase 5.
+- **An approval is only a record.** Nothing the CTO or CMO proposed is applied or published by this system. Do not read "Approved" as "done".
+- **Dashboard "status" is last activity, not health.** Agents have no heartbeat, so a card shows when each last answered and whether its audit data loaded, and says "no activity" rather than claiming to be online.
+- **Council sessions have no per-turn audit link.** Council turns are stored in `CouncilTurnLog` (`auditLogId` is null), not in `AgentAuditLog`, so the session's "Audit trail" tab shows the turn log and links to the audit log filtered to the same day(s), which can include unrelated questions.
+- **Polling, not live updates** (the dashboard every 30 s, a council session every 3 s). A council poll stops after 5 failed polls in a row.
+- **Desktop-first.** There is a collapsible sidebar for small screens, but mobile layout was not designed or tested.
+- **Not built (out of scope):** WebSockets, animated gauges, custom dashboards and analytics, multi-user.
+- **The audit-log search is a plain substring match** (`ILIKE`): fine for this volume, not indexed.
+- **The Clerk areas (`/internal`, `/admin`) were only checked to still build.** `proxy.ts` now checks Mission Control paths before them.
 

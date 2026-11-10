@@ -172,6 +172,11 @@ model AgentAuditLog {
   // human's decision on it, and nothing sets it yet.
   authorizationRequest    Json?
   humanAction             HumanAction @default(Pending)
+  // Phase 6 (Mission Control): WHEN and BY WHOM the decision above was recorded by POST /api/authorization/{id}/approve
+  // or /reject. NULL while Pending. `timestamp` is deliberately NOT rewritten by a decision: it is the time the agent
+  // answered, part of the Clause 6 accountability record.
+  humanActionAt           DateTime?
+  humanActionBy           String?
   timestamp               DateTime    @default(now())
 
   @@index([agentId, timestamp])

@@ -21,10 +21,13 @@ from pydantic import BaseModel, Field
 from app.agents.gatekeeper import is_aquaculture_related
 from app.agents.dr_aqua import get_aquaculture_answer
 from app.api.admin.agents.reset import router as reset_router
+from app.api.audit_logs import router as audit_logs_router
+from app.api.authorization import router as authorization_router
 from app.api.cao import router as cao_router
 from app.api.cmo import router as cmo_router
 from app.api.coo import router as coo_router
 from app.api.council import router as council_router
+from app.api.council_sessions import router as council_sessions_router
 from app.api.cross_check import router as cross_check_router
 from app.api.cto import router as cto_router
 
@@ -38,8 +41,15 @@ app.include_router(cao_router)
 app.include_router(coo_router)
 app.include_router(cto_router)
 app.include_router(cmo_router)
+# The council sessions LIST (GET /api/council/sessions) MUST be registered BEFORE the council router, or
+# /api/council/{session_id} would capture "sessions" as an id. A test pins this order.
+app.include_router(council_sessions_router)
 # The AI Executive Council (Phase 5, POST/GET /api/council) has its own INTERNAL_COUNCIL_KEY.
 app.include_router(council_router)
+# Mission Control (Phase 6): the audit-log browser and the authorization decisions. Both are gated by the SAME
+# INTERNAL_COUNCIL_KEY, which doubles as the admin key (no agent key opens them).
+app.include_router(audit_logs_router)
+app.include_router(authorization_router)
 app.include_router(cross_check_router)
 app.include_router(reset_router)
 
