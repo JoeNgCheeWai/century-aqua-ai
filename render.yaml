@@ -26,12 +26,18 @@ services:
         value: claude-sonnet-5-5
       - key: CTO_MAX_TOKENS
         value: "16384"       # Phase 3: the CTO's answer can also carry a code diff in its authorization_request
+      - key: CMO_MODEL
+        value: claude-sonnet-5-5
+      - key: CMO_MAX_TOKENS
+        value: "16384"       # Phase 4: the CMO's answer carries drafted assets plus the content to publish
       - key: INTERNAL_CAO_KEY
         sync: false          # secret; required to enable the internal-only /api/cao endpoint
       - key: INTERNAL_COO_KEY
         sync: false          # secret; required to enable the internal-only /api/coo endpoint (64-char hex)
       - key: INTERNAL_CTO_KEY
         sync: false          # secret; required to enable the internal-only /api/cto endpoint (64-char hex)
+      - key: INTERNAL_CMO_KEY
+        sync: false          # secret; required to enable the internal-only /api/cmo endpoint (64-char hex)
       - key: GOVERNANCE_DATABASE_URL
         sync: false          # secret; the Neon URL. Enables the audit log, agent state and kill switch
       - key: PINECONE_API_KEY

@@ -4,7 +4,7 @@ The roster of executive agents that sit under the Executive Constitution.
 Adding an agent means: add an entry here, write its agent module (build its system
 prompt with base_constitution.build_system_prompt), and set its key. The governance
 layer (audit log, kill switch, cross-validation) then works for it without further
-changes. The CAO, the COO and the CTO are built (Phases 1 to 3 of the AI Executive Team).
+changes. The CAO, the COO, the CTO and the CMO are built (Phases 1 to 4 of the AI Executive Team).
 
 An agent is "available" when its answer function exists. A planned agent is listed
 with ``answer_path=None`` so that the kill switch can already be armed for it and so
@@ -37,6 +37,8 @@ AGENTS: dict[str, AgentSpec] = {
     "coo": AgentSpec("coo", "Chief Operating Officer", "INTERNAL_COO_KEY", "app.agents.coo_agent:get_coo_answer"),
     # Phase 3 of the AI Executive Team. Its own key (INTERNAL_CTO_KEY) gates POST /api/cto.
     "cto": AgentSpec("cto", "Chief Technology Officer", "INTERNAL_CTO_KEY", "app.agents.cto_agent:get_cto_answer"),
+    # Phase 4 of the AI Executive Team. Its own key (INTERNAL_CMO_KEY) gates POST /api/cmo.
+    "cmo": AgentSpec("cmo", "Chief Marketing & Media Officer", "INTERNAL_CMO_KEY", "app.agents.cmo_agent:get_cmo_answer"),
 }
 
 

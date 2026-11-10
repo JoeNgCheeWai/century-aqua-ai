@@ -263,7 +263,7 @@ Symptom: pages return 200 but look unstyled (white background, plain left-aligne
 
 ### Code map
 - `backend/app/agents/base_constitution.py`: `EXECUTIVE_CONSTITUTION` (Clause 0 + Clauses 1-15) and `build_system_prompt(agent_prompt, extra="")`. The constitution is PREPENDED, so an agent's own prompt can add a role but never sit above it. `tests/test_governance.py` pins the clause numbers, titles and key wording.
-- `backend/app/agents/registry.py`: the roster (`cao`, `coo` and `cto` available). Add a new agent here.
+- `backend/app/agents/registry.py`: the roster (`cao`, `coo`, `cto` and `cmo` available). Add a new agent here.
 - `backend/app/agents/cross_validation.py`: `cross_check(agent_a_id, agent_b_id, query, context)`.
 - `backend/app/governance/`: `db.py` (pg8000, pure Python), `scoring.py`, `audit.py`, `kill_switch.py`, `rate_limit.py`.
 - `backend/app/api/`: `security.py` (shared key check), `cao.py` (`POST /api/cao`, moved out of `main.py` in Phase 1 of the AI Executive Team), `cross_check.py`, `admin/agents/reset.py`. Routers are mounted in `main.py`.
@@ -565,13 +565,13 @@ The CAO's and COO's shape PLUS `authorization_request`: `response`, `reply` (sam
 - **Nothing applies the request.** It is returned by the API AND stored whole in `AgentAuditLog.authorizationRequest` (see "Database" below), which is the source for the future "Pending Authorizations" view. A plain-text summary block ("AUTHORIZATION REQUEST (pending human approval; nothing has been executed)", with action, risk, impact and commands, but no diff) is also appended to the response text, so the stored `response` is readable on its own.
 
 ### Database (migration `add_authorization_request_to_audit_log`)
-`AgentAuditLog` gained one nullable column, `authorizationRequest JSONB`. It holds the CTO's full validated request (`action_summary`, `risk_level`, `impact`, `proposed_code_diff`, `proposed_commands`, `rollback_plan`, `status`, `requires_human_approval`, `executed`). It is SQL `NULL` for every CAO and COO row, for CTO answers that propose no change, and for older rows. The diff and commands are stored as text for review; nothing runs them. The change is additive and does not touch existing rows. `humanAction` (`Pending` / `Approved` / `Modified` / `Rejected`) is still where a human's decision on the request would be recorded, and nothing sets it yet.
+`AgentAuditLog` gained one nullable column, `authorizationRequest JSONB`. It holds the CTO's full validated request (`action_summary`, `risk_level`, `impact`, `proposed_code_diff`, `proposed_commands`, `rollback_plan`, `status`, `requires_human_approval`, `executed`). It is SQL `NULL` for every CAO and COO row, for CTO answers that propose no change, and for older rows. **From Phase 4 the CMO writes the same column with a different shape (content, not code): see Section 15, and read `agentId` first.** The diff and commands are stored as text for review; nothing runs them. The change is additive and does not touch existing rows. `humanAction` (`Pending` / `Approved` / `Modified` / `Rejected`) is still where a human's decision on the request would be recorded, and nothing sets it yet.
 
 **Deploy order, and why it is safe either way.** `audit._record_sync` names the `authorizationRequest` column in the INSERT ONLY when a request exists. Every other answer (all CAO and COO answers, and CTO answers with no change) is written exactly as before. So if the backend deploys before `prisma migrate deploy` has been run on Neon, the CAO and COO keep being audit-logged. Only a CTO change request needs the column: until Neon is migrated its audit insert fails, `audit_id` comes back `null`, and the answer and the request still reach the human (the failure is logged). Run `npx prisma migrate deploy` from `frontend/` against Neon promptly to close that gap.
 
 
 ### Structured to support the future Council Protocol
-- **The first four fields are identical for all three executives**, parsed by the same agent-neutral `cao_reasoning.parse_cao_output`. `tests/test_cto_agent.py` pins the CTO's example JSON to the CAO's, so a change to one without the other fails a test.
+- **The first four fields are identical for all executives** (the CMO was added in Phase 4, Section 15), parsed by the same agent-neutral `cao_reasoning.parse_cao_output`. `tests/test_cto_agent.py` pins the CTO's example JSON to the CAO's, so a change to one without the other fails a test.
 - **Cross-validation works in every direction.** `cross_check` can now ask the real CTO to review the CAO or COO (technical feasibility), or the reverse. Reviews run with RAG off and audit off, and a verdict never creates an authorization request.
 - `pre_consultation_requests` stays forced to `null` (`PRE_CONSULTATION_ENABLED = False`). Nothing is sent to any agent. The CTO is not fed the CAO's or COO's output automatically, so **a caller must paste it into the message**. The Council Protocol will wire that.
 
@@ -596,4 +596,99 @@ The database-backed class runs ONLY against a localhost database, writes under t
 - **A pending request is not yet queryable as "pending".** `authorizationRequest.status` is always `pending_human_approval` at write time and nothing ever updates it, so "pending" is currently decided by `humanAction = 'Pending'` on a row whose `authorizationRequest` is not null. Do not read `status` inside the JSON as the live state; it records what the CTO proposed, not what a human decided.
 - Code checks the SHAPE and enforces the safety rules above, not whether a diff is correct, and the constitutional score is still only a surface check.
 - Answers are long and slow (roughly 25 to 60 seconds) and cost more than a short answer.
+
+
+## 15. Phase 4: AI_CMO Agent (Chief Marketing & Media Officer)
+
+**Scope.** Fourth and last executive of the AI Executive Team. It adds the AI_CMO: market outreach, brand narrative, content and creative direction, with the aim of driving qualified traffic to the CAIP platform. The Council Protocol and the Living Console are NOT built, and the frontend is untouched. The CAO's, COO's and CTO's code was not changed (all are live in production); the CMO reuses their parser, output contract and the `authorizationRequest` column.
+
+**Where the four differ.** The CAO sets strategy and owns the science. The COO tests cost and execution. The CTO guards the technology. The CMO answers "how do we tell this story so the right people notice it, believe it and act", and drafts the words and visuals. All four advise a human and none can act (Clause 0).
+
+### Code map
+- `backend/app/prompts/cmo_prompt.py`: `CMO_SYSTEM_PROMPT` (role, claims discipline, the SND facts, the 4 pillars, the Authorization Workflow) and `CMO_REASONING_PROMPT` (the output format).
+- `backend/app/agents/cmo_agent.py`: `get_cmo_result()` and `get_cmo_answer()`. The constitution is prepended first via `build_system_prompt`.
+- `backend/app/agents/cmo_authorization.py`: validates and hardens the CMO's `authorization_request` IN CODE (see below). It reuses `RISK_LEVELS` and `STATUS_PENDING` from `cto_authorization.py`.
+- `backend/app/api/cmo.py`: `POST /api/cmo`. `CMOResponse` inherits the CAO's `CAOResponse` and adds one field.
+- `backend/app/agents/registry.py`: `cmo` points at `app.agents.cmo_agent:get_cmo_answer`, so cross-validation and the kill switch work for it with no other change.
+- `backend/app/api/security.py`: new `require_cmo_key()`. The CAO, COO and CTO gates are unchanged.
+- `backend/tests/test_cmo_agent.py`: the Phase 4 tests. `backend/tests/test_coo_agent.py`: one roster assertion updated.
+
+### Access and keys
+- `POST /api/cmo` requires `INTERNAL_CMO_KEY` in the **`X-Internal-CMO-Key`** header, checked before anything else, so an unauthenticated caller can never cause a model call. If `INTERNAL_CMO_KEY` is unset on the server the endpoint answers 503 (closed).
+- **All four keys are separate.** The CAO, COO and CTO keys do not open `/api/cmo`, and the CMO key opens none of theirs, nor cross-check nor the kill switch (those stay on `INTERNAL_CAO_KEY`). Tests pin every pairing.
+- `X-User-Id`, `history` and `reset_epoch` behave exactly as for the other executives (kill switch, Clause 15).
+
+### Response of `POST /api/cmo`
+The CAO's shape PLUS `authorization_request`: `response`, `reply` (same text), `reasoning_chain`, `scenarios` (or `null`), `pre_consultation_requests` (always `null` values, forced in code), `authorization_request` (or `null`), `constitutional_score`, `needs_review`, `audit_id`, plus `reset_epoch`, `history_discarded`, `sources`. This is the same top-level shape as `/api/cto` (a test pins it). Every answer is recorded with `audit.record_response('cmo', ...)` as agent `cmo`. **No database change was needed:** the CMO writes the `authorizationRequest` column added in Phase 3, so Neon needs no migration for this phase.
+
+### The four pillars
+| # | Pillar | What the prompt asks the CMO to do |
+|---|---|---|
+| 1 | Market Intelligence and Trend Analysis | Trends, competitor messaging patterns and platform behaviour, each labelled established / emerging / speculative and marked "verify before relying on it"; never a fabricated competitor quote or statistic |
+| 2 | High-Impact Content Generation | Scroll-stopping posts, email sequences and ad copy with two or three hook options, one call to action, a measurement plan and an A/B test; claims listed for a human to substantiate |
+| 3 | Presentation and Speech Crafting | Keynotes, pitch-deck narratives and webinar scripts for investors, partners and live audiences; spoken rhythm, timing and running time; placeholders in brackets; investor material marked for legal review |
+| 4 | Visual and Media Direction | Acts as Creative Director: detailed image and video prompts (subject, camera, lighting, palette, aspect ratio, negative prompt) and structured storyboards (shot list, hook in the first seconds, sound-off version, end card); the brand navy `#0A2342` and teal `#00C9A7` as the default palette; illustrations labelled as illustrations |
+
+**Claims discipline** (binds every asset): no guarantees of yield, survival or return; no cure or prevention claims; no "risk-free" or "zero mortality"; no competitor-comparison claim without human-supplied evidence; no invented customers, quotes, testimonials, certifications or awards; no fake reviews, scraped lists or real people's likeness. The **SND Probiotic facts are copied character for character from the CAO's prompt** (a test compares them), with the same rules: disclose Century Aqua as developer, present growout results as preliminary, keep to the evidence's scope, and have a human confirm any public SND wording.
+
+
+### The Authorization Workflow (publishing and public-facing changes)
+**The rule: the CMO never publishes anything.** It has no social, email, advertising, website or CMS access and no tools. It may DRAFT freely, and the drafts appear in `response` for a human to read: a draft is advice, not an action, so a drafting request needs no `authorization_request`. But for any request that involves publishing, posting, sending or scheduling content, launching a campaign, spending on promotion, or changing public-facing material, it outputs a structured `authorization_request` for a human instead of acting:
+
+| Field | Meaning |
+|---|---|
+| `action_summary` | What would go public or change, where and when |
+| `risk_level` | `low`, `medium`, `high` or `critical` |
+| `impact` | Audience, reach, reputational and legal exposure, cost, reversibility |
+| `proposed_content` | The exact copy, script or creative, as TEXT for review (or `null`) |
+| `deployment_commands` | The steps a human would take to publish it, as TEXT |
+| `rollback_plan` | How to take it down or correct it |
+| `claims_to_verify` | Factual claims a human must substantiate before publishing |
+| `status` | Always `pending_human_approval` (forced) |
+| `requires_human_approval` | Always `true` (forced) |
+| `executed` | Always `false` (forced) |
+
+**This is NOT the CTO's shape.** It has `proposed_content`, `deployment_commands` and `claims_to_verify` where the CTO has `proposed_code_diff` and `proposed_commands`. Both are stored in `AgentAuditLog.authorizationRequest`, so **read the row's `agentId` first** to know which shape you hold. A test pins that the two field sets differ as intended.
+
+**What CODE enforces (`cmo_authorization.py`), whatever the model writes:**
+- `status`, `requires_human_approval` and `executed` are forced to the values above, so a request can never claim to be approved, published or executed. The API model uses `Literal` types, so the contract itself refuses anything else.
+- A missing or unknown `risk_level` becomes `high`, never `low`.
+- **A risk floor from the text.** Anything public is at least `medium` (it cannot be fully recalled: it is screenshotted, cached and quoted). Guarantee, cure or "risk-free" claims, "zero mortality", or a scraped or purchased contact list force `critical`. Investor material, paid spend or money figures, mass sends, competitor comparisons, testimonials, personal data, "world's first", certification wording, any SND Probiotic or Sea Tilapia Strain mention, and website or production deployment force at least `high`. The floor reads the content, the steps and the claims, and only ever RAISES a level.
+- **Claim detection.** The code scans the draft for claim-like wording (percentages, multipliers, "proven", "world's first", "certified", "increase/reduce ... by N") and adds each hit to `claims_to_verify`, prefixed "[detected by the system, substantiate before publishing]", so a human sees it even if the model listed none.
+- A request with neither content nor steps is dropped, a cut-off reply never yields a half-built request, and lengths are capped.
+
+**What it does NOT do:**
+- **Nothing publishes the request, and there is no approve endpoint.** A human reads it and acts outside the system. `humanAction` stays `Pending` and nothing sets it.
+- **It does not check that a claim is TRUE.** The floor and the claim detector are pattern checks. They will miss risky wording that does not look risky, and they can flag harmless text. A human must read the content and substantiate every claim before anything goes live (Clause 0).
+- The audit text appended to `response` omits the content itself (the content is only in the JSON column).
+
+### Scenarios are illustrative engagement projections
+The brief asked for "projected engagement metrics". The CMO has no analytics, audience data or benchmarks, so every metric in a scenario's `description` must be labelled **illustrative** and say what real data would replace it (for example CAIP's own past campaigns). The scenario shape is unchanged (`description`, `timeline`, `resource_requirements`, `confidence_percentage`, `key_assumptions`, `risks`), so the Council Protocol reads all four executives the same way. In live runs the model followed this and mostly used relative language. Treat these numbers as assumptions, never as forecasts.
+
+
+### Structured to support the future Council Protocol
+- **All four executives emit the same first four fields**, parsed by the same agent-neutral `cao_reasoning.parse_cao_output`. `tests/test_cmo_agent.py` pins the CMO's example JSON to the CAO's and to the CTO's, so changing one without the others fails a test.
+- **Cross-validation works in every pairing, both directions** (CAO, COO, CTO, CMO). A review runs with RAG off and audit off, and a verdict never creates an authorization request. The CMO as a reviewer judges brand, message, claims and reputational risk.
+- `pre_consultation_requests` stays forced to `null` (`PRE_CONSULTATION_ENABLED = False`). Nothing is sent to any agent and the prompt forbids claiming a consultation happened. Nothing feeds the other executives' output into the CMO, so **a caller must paste it into the message**. The Council Protocol will wire that.
+
+### Config
+`render.yaml` and `backend/.env.example` now carry `CMO_MODEL`, `CMO_MAX_TOKENS` (16384) and `INTERNAL_CMO_KEY`. **`INTERNAL_CMO_KEY` must be set on Render** (a random 64-character hex string, different from the other three) or `/api/cmo` answers 503. A value set by hand in the Render dashboard overrides `render.yaml`. `backend/.env` has no `INTERNAL_CMO_KEY` yet; add one before any local call that uses a real key.
+
+### Tests (`backend/tests/test_cmo_agent.py`, 75)
+Registry, prompt (all four pillars present and in order, each pillar's topics, "no tools" and "no live data", the claims discipline, the SND facts compared character for character with the CAO's, the mandatory authorization workflow, illustrative engagement metrics), the shared-contract tests, the authorization normaliser (forced status, risk floor over content, steps and claims, fail-safe risk, system-detected claims, dropped empty requests, caps, no raising), and `/api/cmo` with a MOCKED model asked "Draft a LinkedIn campaign and a 3-minute keynote intro to attract shrimp farm investors to our new RAS feasibility tool." (full shape, drafts in the response, chain, three distinct scenarios with illustrative engagement, null pre-consultation, null authorization request).
+
+A mocked publishing request returns an `authorization_request` and NOT an executed action, even when the mock model claims it is approved, executed and low-risk and its draft contains a guarantee and an unsupported percentage: the code forces pending, raises the risk to critical and adds the claims. **Key separation** is tested for every pairing: the CMO key is refused on every other endpoint, the other three keys are refused on `/api/cmo` in every header, and 503 when the CMO key is unset. The real CMO is tested as a cross-check reviewer, and the audit row is checked, including that the full request round-trips through `authorizationRequest` in the CMO's shape and that the column is `NULL` for a draft, a plain-text answer, a dropped request and a cut-off request.
+
+**Mutation-checked:** eight deliberate breakages (status or executed taken from the model, unknown risk defaulting to low, risk floor off, claim detector off, request not passed to the audit log, the CMO gate using the CAO key, the CMO logging as `cao`) each made tests fail. The database-backed class runs ONLY against a localhost database, writes under the agent id `testbot` and deletes its rows. Agent id `cmo` is proven by a test of the call `audit.record_response('cmo', ...)`. Whole backend suite: 417 OK (342 before Phase 4).
+
+
+### Honest limits (DO NOT OVERSTATE)
+- **The unit tests mock the model.** Separately, the CMO was run live against the real model locally, twice (a campaign request and a publishing request). It has NOT been run on Render, and nobody has seen it produce a campaign that was actually published or measured.
+- **Live findings.** Given the brief's campaign request with no facts about the tool, the real model opened with `ESCALATE TO HUMAN` (confidence 55%, below 60%), delivered LinkedIn and keynote drafts with the tool's capabilities left as `[PLACEHOLDERS]`, listed the facts it needed from the team, and published nothing. That is the intended behaviour, but it means **the output is only as good as the facts you give it**: with only a tool name it can write structure and hooks, not substance. Given a publishing request WITH an approved draft, it returned a complete `authorization_request` (status pending, `executed` false, the content, seven deployment steps, a rollback plan, three claims to verify) and left out the newsletter send because it had no approved list. The model rated that request `medium`, and the floor accepted it because the copy was modest.
+- **Trends are not live.** The CMO has no internet, search, platform, analytics or competitor access. "Studying current trends" means general knowledge that it labels "verify before relying on it". Do not treat its trend, algorithm, hashtag, timing or benchmark statements as current.
+- **Engagement numbers are assumptions.** There is no analytics feed. Scenario engagement figures are illustrative. The live model mostly used relative language, but small figures such as "5 to 15 qualified investors" can still appear, labelled illustrative. In one live run the pessimistic scenario did not say "illustrative" (it had no figures), so a reader must not assume every scenario carries the label.
+- **It cannot generate or see images or video.** Pillar 4 produces briefs and storyboards for a human or a tool to use. Nothing is connected to Midjourney, Runway or any generator, and generator-specific syntax changes, so the prompts are starting points to check.
+- **Compliance is not automated.** The risk floor and claim detector are pattern checks. Investor, government, health-related and advertising material needs real legal and compliance review. The prompt says so, and code cannot replace it.
+- **No approval step exists in the product** (as for the CTO). Approval is a manual, off-system act. `authorizationRequest.status` always reads `pending_human_approval`, so "pending" is `humanAction = 'Pending'` on a row with a non-null `authorizationRequest`, not the JSON status.
+- Answers are long and slow (roughly 30 to 85 seconds) and cost more than a short answer.
 

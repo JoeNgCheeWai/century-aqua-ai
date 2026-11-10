@@ -159,12 +159,17 @@ model AgentAuditLog {
   scenarios               Json?
   // {coo_query, cto_query}. Structure only for now: nothing consumes it until the Council Protocol.
   preConsultationRequests Json?
-  // The AI_CTO's Authorization Workflow (Phase 3): a proposed code or system change waiting for a human,
-  // {action_summary, risk_level, impact, proposed_code_diff, proposed_commands, rollback_plan, status,
-  // requires_human_approval, executed}. NULL for every row that is not a CTO change request (all CAO and COO
-  // rows, CTO answers that propose no change, and rows written before this field existed). status is always
-  // "pending_human_approval" and executed always false when written (forced in backend/app/agents/cto_authorization.py).
-  // This is the source for the future "Pending Authorizations" view; humanAction below is the human's decision on it.
+  // The Authorization Workflow (Phases 3 and 4): a proposed action waiting for a human. Written by TWO agents with
+  // DIFFERENT shapes, so read agentId first:
+  //   agentId 'cto' (code or system change): {action_summary, risk_level, impact, proposed_code_diff,
+  //     proposed_commands, rollback_plan, status, requires_human_approval, executed}  (backend/app/agents/cto_authorization.py)
+  //   agentId 'cmo' (publish or change something public): {action_summary, risk_level, impact, proposed_content,
+  //     deployment_commands, rollback_plan, claims_to_verify, status, requires_human_approval, executed}
+  //     (backend/app/agents/cmo_authorization.py)
+  // NULL for every other row (all CAO and COO rows, CTO and CMO answers that propose no action, and rows written
+  // before this field existed). status is always "pending_human_approval" and executed always false when written
+  // (forced in code). This is the source for the future "Pending Authorizations" view; humanAction below is the
+  // human's decision on it, and nothing sets it yet.
   authorizationRequest    Json?
   humanAction             HumanAction @default(Pending)
   timestamp               DateTime    @default(now())

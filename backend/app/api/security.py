@@ -29,6 +29,9 @@ COO_KEY_HEADER = "X-Internal-COO-Key"
 # Same for the CTO (Phase 3): its own key, its own header.
 CTO_KEY_ENV = "INTERNAL_CTO_KEY"
 CTO_KEY_HEADER = "X-Internal-CTO-Key"
+# And for the CMO (Phase 4): its own key, its own header.
+CMO_KEY_ENV = "INTERNAL_CMO_KEY"
+CMO_KEY_HEADER = "X-Internal-CMO-Key"
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:@+\-]{1,100}$")
 
 
@@ -53,6 +56,11 @@ def require_coo_key(provided: str | None) -> None:
 def require_cto_key(provided: str | None) -> None:
     """The CTO endpoint's gate: INTERNAL_CTO_KEY in the X-Internal-CTO-Key header. Fails closed (503) if unset."""
     require_internal_key(provided, CTO_KEY_ENV, CTO_KEY_HEADER)
+
+
+def require_cmo_key(provided: str | None) -> None:
+    """The CMO endpoint's gate: INTERNAL_CMO_KEY in the X-Internal-CMO-Key header. Fails closed (503) if unset."""
+    require_internal_key(provided, CMO_KEY_ENV, CMO_KEY_HEADER)
 
 
 def require_actor(value: str | None, header: str, *, required: bool) -> str:
