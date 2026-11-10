@@ -28,7 +28,11 @@ export default function AgentChat({ agent }: { agent: AgentKey }) {
     return () => clearInterval(timer);
   }, [busy]);
 
-  useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }), [turns, busy]);
+  // A block body on purpose: React treats whatever an effect RETURNS as its cleanup function, so an arrow with an
+  // expression body would hand React the value of scrollIntoView() and crash on the next run ("destroy is not a function").
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns, busy]);
 
   async function send(event: FormEvent) {
     event.preventDefault();
