@@ -719,6 +719,42 @@ class AsyncJobApiTests(CouncilApiBase):
             self.assertEqual(self.post(body).status_code, 422, body)
         self.assertEqual(self.store.rows, {})
 
+    def test_one_agent_alone_is_a_422_and_no_session_row_is_created(self):
+        for agents in (["cto"], ["cto", "cto"], ["CTO", " cto "]):
+            response = self.post({"query": QUERY, "agents": agents})
+            self.assertEqual(response.status_code, 422, agents)
+            self.assertIn("at least 2", response.json()["detail"])
+        self.assertEqual(self.store.rows, {})
+
+    def test_just_the_cto_and_cmo_runs_a_whole_session_end_to_end_over_http_with_nobody_added(self):
+        model = FakeModel()
+        with mock.patch.object(council, "_client", model), TestClient(self.client.app) as client:
+            started = client.post("/api/council", json={"query": QUERY, "agents": ["cto", "cmo"]}, headers=self.headers)
+            self.assertEqual(started.status_code, 202, started.text)
+            sid = started.json()["session_id"]
+            for _ in range(60):
+                polled = client.get(f"/api/council/{sid}", headers=self.headers).json()
+                if polled["status"] != "RUNNING":
+                    break
+                time.sleep(0.1)
+        self.assertEqual(polled["status"], "RESOLVED", polled.get("escalation_reason"))
+        self.assertEqual(polled["participating_agents"], ["cto", "cmo"])
+        self.assertIn("CTO chairs", polled["selection_rationale"])
+        self.assertEqual({t["agent_id"] for t in polled["turns"]}, {"cto", "cmo"})
+        self.assertTrue(2 <= len(polled["options"]) <= 3)
+        self.assertFalse(polled["executed"])
+
+    def test_all_four_agents_run_end_to_end_over_http(self):
+        with mock.patch.object(council, "_client", FakeModel()), TestClient(self.client.app) as client:
+            sid = client.post("/api/council", json={"query": QUERY, "agents": ALL}, headers=self.headers).json()["session_id"]
+            for _ in range(60):
+                polled = client.get(f"/api/council/{sid}", headers=self.headers).json()
+                if polled["status"] != "RUNNING":
+                    break
+                time.sleep(0.1)
+        self.assertEqual(polled["status"], "RESOLVED", polled.get("escalation_reason"))
+        self.assertEqual(polled["participating_agents"], ALL)
+
     def test_a_running_row_older_than_five_minutes_is_reported_failed_orphaned_by_restart(self):
         sid = "11111111-1111-4111-8111-111111111111"
         self.store.rows[sid] = {
@@ -878,6 +914,103 @@ class KeySeparationTests(CouncilApiBase):
             self.assertNotEqual(env, security.COUNCIL_KEY_ENV)
 
 
+class AnyCombinationSessionTests(unittest.IsolatedAsyncioTestCase):
+    """The CEO chooses who attends. Every combination of 2 to 4 agents must run to a result, with sensible roles."""
+
+    @staticmethod
+    def combos():
+        import itertools
+
+        return [list(c) for size in (2, 3, 4) for c in itertools.combinations(council.ORDER, size)]
+
+    async def test_every_one_of_the_eleven_combinations_resolves_with_only_seated_agents_speaking(self):
+        self.assertEqual(len(self.combos()), 11)
+        for combo in self.combos():
+            model = FakeModel()
+            result = await run(model, agents=combo)
+            self.assertEqual(result["status"], "RESOLVED", (combo, result["escalation_reason"]))
+            self.assertEqual(result["participating_agents"], combo)
+            self.assertTrue(2 <= len(result["options"]) <= 3, combo)
+            self.assertTrue(all(o["most_likely_failure_mode"] for o in result["options"]), combo)
+            self.assertFalse(result["executed"])
+            spoke = {c["agent"] for c in model.calls}
+            self.assertTrue(spoke <= set(combo), (combo, spoke))  # nobody who is not at the table is ever called
+            self.assertTrue({t["agent_id"] for t in result["turns"]} <= set(combo), combo)
+
+    async def test_the_right_agents_chair_and_synthesize_for_each_combination(self):
+        for combo in self.combos():
+            chair, synthesizer = council.assign_roles(combo)
+            model = FakeModel()
+            await run(model, agents=combo)
+            by_kind = {c["kind"]: c["agent"] for c in model.calls if c["kind"] != "turn"}
+            self.assertEqual(by_kind["moderation"], chair, combo)
+            self.assertEqual(by_kind["red_team"], chair, combo)
+            self.assertEqual(by_kind["synthesis"], synthesizer, combo)
+            self.assertNotEqual(by_kind["synthesis"], by_kind["red_team"], combo)
+
+    async def test_with_the_coo_and_cao_seated_nothing_changes_who_does_what(self):
+        for combo in (["cao", "coo"], ["cao", "coo", "cto"], ["cao", "coo", "cto", "cmo"]):
+            model = FakeModel()
+            await run(model, agents=combo)
+            roles = {c["kind"]: c["agent"] for c in model.calls if c["kind"] != "turn"}
+            self.assertEqual(roles, {"moderation": "coo", "synthesis": "cao", "red_team": "coo"}, combo)
+
+    async def test_a_full_table_and_the_usual_pair_are_worded_exactly_as_before(self):
+        for combo in (["cao", "coo", "cto", "cmo"],):
+            model = FakeModel()
+            captured = []
+            original = model._create
+
+            async def spy(**kw):
+                captured.append(kw["messages"][0]["content"])
+                return await original(**kw)
+
+            model.messages.create = spy
+            await run(model, agents=combo)
+            for text in captured:
+                self.assertNotIn("SEAT NOTE", text)
+                self.assertNotIn("PARTICIPANTS AT THIS TABLE", text)
+
+    async def test_a_smaller_table_is_told_who_is_seated_and_a_stand_in_is_told_it_is_standing_in(self):
+        model = FakeModel()
+        captured = []
+        original = model._create
+
+        async def spy(**kw):
+            captured.append((kw["system"], kw["messages"][0]["content"]))
+            return await original(**kw)
+
+        model.messages.create = spy
+        await run(model, agents=["cto", "cmo"])
+        texts = [u for _, u in captured]
+        self.assertTrue(all("PARTICIPANTS AT THIS TABLE: CTO, CMO" in u for u in texts if "COUNCIL TURN" in u or "You are chairing" in u or "synthesizing" in u))
+        moderation_prompt = next(u for u in texts if "You are chairing" in u)
+        self.assertIn("SEAT NOTE: the COO is not seated", moderation_prompt)
+        self.assertIn("You (CTO) chair", moderation_prompt)
+        synthesis_prompt = next(u for u in texts if "synthesizing for the human CEO" in u)
+        self.assertIn("SEAT NOTE: the CAO is not seated", synthesis_prompt)
+        self.assertIn("You (CMO) synthesize", synthesis_prompt)
+
+    async def test_a_stand_in_chair_can_veto_on_its_own_authority_like_the_coo(self):
+        veto = [{"agent_id": "cto", "constraint": "Security floor", "source": "company policy", "overrides": ["cmo"]}]
+        result = await run(FakeModel(mod=moderation(vetoes=veto)), agents=["cto", "cmo"])  # the CTO chairs here
+        self.assertEqual([v["agent_id"] for v in result["hard_constraint_vetoes"]], ["cto"])
+        # With the COO seated and chairing, the CTO still needs to have STATED a hard constraint itself.
+        result = await run(FakeModel(mod=moderation(vetoes=veto)), agents=["coo", "cto"])
+        self.assertEqual(result["hard_constraint_vetoes"], [])
+
+    async def test_the_session_fails_cleanly_if_the_chair_gives_no_usable_proposal(self):
+        model = FakeModel(turns={"cto": "this is not json"})
+        result = await run(model, agents=["cto", "cmo"])  # the CTO is the chair here
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("CTO who chairs", result["escalation_reason"])
+
+    async def test_the_two_reserved_calls_still_fit_the_budget_at_every_table_size(self):
+        for combo in self.combos():
+            result = await run(FakeModel(), agents=combo)
+            self.assertLessEqual(result["model_calls"], council.MAX_CALLS, combo)
+
+
 class SelectionTests(unittest.TestCase):
     def test_cao_and_coo_always_sit_and_the_size_is_two_to_four(self):
         for query in ("How do we treat white spot in tilapia?", QUERY, "Launch an API security campaign for the market"):
@@ -891,10 +1024,52 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("cto", council.select_participants("Change the database security settings")[0])
         self.assertIn("cmo", council.select_participants("Plan the brand campaign")[0])
 
-    def test_explicit_agents_are_validated_and_cao_coo_are_added(self):
-        self.assertEqual(council.resolve_participants("q", ["cmo"])[0], ["cao", "coo", "cmo"])
+    def test_explicit_agents_are_validated_and_nobody_is_added(self):
+        self.assertEqual(council.resolve_participants("q", ["cmo", "cto"])[0], ["cto", "cmo"])  # fixed order, nobody added
         with self.assertRaises(ValueError):
             council.resolve_participants("q", ["ceo"])
+
+    def test_every_combination_of_two_to_four_agents_is_allowed(self):
+        import itertools
+
+        for size in (2, 3, 4):
+            for combo in itertools.combinations(council.ORDER, size):
+                agents, why = council.resolve_participants("q", list(combo))
+                self.assertEqual(agents, list(combo))
+                self.assertTrue(why)
+
+    def test_fewer_than_two_different_agents_is_refused(self):
+        for bad in (["cto"], ["cto", "cto"], ["CTO", " cto "]):
+            with self.assertRaises(ValueError, msg=bad) as caught:
+                council.resolve_participants("q", bad)
+            self.assertIn("at least 2", str(caught.exception))
+
+    def test_names_are_case_insensitive_and_duplicates_collapse(self):
+        self.assertEqual(council.resolve_participants("q", ["CMO", " cto ", "cmo"])[0], ["cto", "cmo"])
+
+    def test_roles_default_to_the_coo_chairing_and_the_cao_synthesizing(self):
+        self.assertEqual(council.assign_roles(["cao", "coo", "cto", "cmo"]), ("coo", "cao"))
+        self.assertEqual(council.assign_roles(["cao", "coo"]), ("coo", "cao"))
+
+    def test_roles_fall_back_when_the_coo_or_the_cao_is_absent_and_the_synthesizer_never_red_teams_its_own_options(self):
+        self.assertEqual(council.assign_roles(["cto", "cmo"]), ("cto", "cmo"))
+        self.assertEqual(council.assign_roles(["cao", "cmo"]), ("cmo", "cao"))
+        self.assertEqual(council.assign_roles(["cao", "cto"]), ("cto", "cao"))
+        self.assertEqual(council.assign_roles(["coo", "cto"]), ("coo", "cto"))
+        for size in (2, 3, 4):
+            import itertools
+
+            for combo in itertools.combinations(council.ORDER, size):
+                chair, synthesizer = council.assign_roles(list(combo))
+                self.assertIn(chair, combo)
+                self.assertIn(synthesizer, combo)
+                self.assertNotEqual(chair, synthesizer, combo)
+
+    def test_the_rationale_says_who_stands_in_only_when_someone_does(self):
+        self.assertNotIn("not seated", council.resolve_participants("q", ["cao", "coo", "cto"])[1])
+        why = council.resolve_participants("q", ["cto", "cmo"])[1]
+        self.assertIn("CTO chairs", why)
+        self.assertIn("CMO synthesizes", why)
 
 
 if __name__ == "__main__":

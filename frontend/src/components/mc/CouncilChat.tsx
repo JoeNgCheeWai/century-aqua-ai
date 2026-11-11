@@ -6,19 +6,17 @@ import CouncilOptions from "@/components/mc/CouncilOptions";
 import { Badge, Card, ErrorNote, Spinner, StatusBadge, buttonPrimary, inputClass } from "@/components/mc/ui";
 import { McError, mc, useCouncilPoll } from "@/lib/mc-client";
 import { MEMORY_PREFIX, boardroomQuery, parseStored, readStore, writeStore, type BoardroomEntry } from "@/lib/mc-memory";
-import { AGENT_INFO, type AgentKey } from "@/lib/mc-types";
+import { DEFAULT_SEATS, MIN_SEATS, SEATS, canConvene, roleNote, seatProblem, toggleSeat, type SeatId } from "@/lib/mc-boardroom";
+import { AGENT_INFO } from "@/lib/mc-types";
 
 const MEMORY_KEY = `${MEMORY_PREFIX}boardroom`;
 const MAX_ENTRIES = 10;
 
-/** The CAO chairs the synthesis and the COO chairs the moderation and the red team, so the backend always seats both. */
-const ALWAYS: AgentKey[] = ["cao", "coo"];
-const OPTIONAL: AgentKey[] = ["cto", "cmo"];
-
 /**
  * Convene the Boardroom (the executive council): start a session, show progress while it runs in the background, and show
- * the options when it resolves. By default the system picks who joins from the question; "I'll choose" lets the human seat
- * the CTO and the CMO. The CAO and the COO always sit (the backend adds them whatever is sent).
+ * the options when it resolves. The CEO decides who attends: "I'll choose" makes all four executives independently
+ * selectable (any 2 to 4), and nobody is added on the CEO's behalf. "Automatic" lets the system pick from the question
+ * instead. The only rule is the backend's: at least two different agents.
  *
  * MEMORY. Each Boardroom session is a separate backend job that starts clean (by design), so a follow-up question carries
  * the earlier discussions inside the question text (see boardroomQuery in lib/mc-memory.ts). Every finished session in this
@@ -30,8 +28,8 @@ export default function CouncilChat() {
   const [loaded, setLoaded] = useState(false);
   const pendingQuestion = useRef("");
   const recorded = useRef<string | null>(null);
-  const [auto, setAuto] = useState(true);
-  const [extra, setExtra] = useState<AgentKey[]>([]);
+  const [auto, setAuto] = useState(false);
+  const [seats, setSeats] = useState<SeatId[]>(DEFAULT_SEATS);
   const [starting, setStarting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -83,15 +81,16 @@ export default function CouncilChat() {
     event.preventDefault();
     const query = text.trim();
     if (!query || starting || running) return;
+    if (!auto && !canConvene(seats)) return; // the button is disabled too; this guards Enter and any other route in
     setStarting(true);
     setStartError(null);
     setSessionId(null);
     try {
       // The backend answers 202 {session_id, status: RUNNING} at once; the work continues in the background.
-      // `agents` is left out for automatic selection. When the human chooses, the CAO and COO are listed explicitly too.
+      // `agents` is left out for automatic selection. When the human chooses, exactly the ticked agents are sent.
       // A follow-up carries the earlier discussions inside the question (the backend session starts clean).
       const withContext = boardroomQuery(query, earlier);
-      const body = auto ? { query: withContext } : { query: withContext, agents: [...ALWAYS, ...extra] };
+      const body = auto ? { query: withContext } : { query: withContext, agents: seats };
       const started = await mc<{ session_id: string }>("/council", { method: "POST", body });
       pendingQuestion.current = query;
       setText("");
@@ -143,42 +142,42 @@ export default function CouncilChat() {
           <legend className="px-1 text-xs uppercase tracking-[0.18em] text-cyan-300/80">Who sits at the table</legend>
           <div className="flex flex-wrap gap-4 text-sm text-slate-300">
             <label className="flex items-center gap-2">
-              <input type="radio" name="seating" checked={auto} onChange={() => setAuto(true)} />
-              Automatic (recommended)
-            </label>
-            <label className="flex items-center gap-2">
               <input type="radio" name="seating" checked={!auto} onChange={() => setAuto(false)} />
               I&apos;ll choose
             </label>
+            <label className="flex items-center gap-2">
+              <input type="radio" name="seating" checked={auto} onChange={() => setAuto(true)} />
+              Automatic (the system picks from the question)
+            </label>
           </div>
-          <div className="flex flex-wrap gap-4 text-sm">
-            {[...ALWAYS, ...OPTIONAL].map((id) => {
-              const fixed = ALWAYS.includes(id);
-              const checked = auto ? fixed : fixed || extra.includes(id);
-              return (
-                <label key={id} className={`flex items-center gap-2 ${auto || fixed ? "text-slate-500" : "text-slate-200"}`}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={auto || fixed}
-                    onChange={() => setExtra((prev) => (prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id]))}
-                  />
-                  {AGENT_INFO[id].name}
-                  {fixed && <span className="text-[11px]">(always sits)</span>}
-                </label>
-              );
-            })}
+          <div className="flex flex-wrap gap-4 text-sm" role="group" aria-label="Executives at the table">
+            {SEATS.map((id) => (
+              <label key={id} className={`flex items-center gap-2 ${auto ? "text-slate-500" : "text-slate-200"}`}>
+                <input type="checkbox" checked={auto ? false : seats.includes(id)} disabled={auto} onChange={() => setSeats((prev) => toggleSeat(prev, id))} />
+                {AGENT_INFO[id].name}
+              </label>
+            ))}
           </div>
-          <p className="text-xs text-slate-500">
-            {auto
-              ? "The CAO and COO always sit; the CTO and CMO join when the question touches their field."
-              : "The CAO and COO always sit. Tick the CTO and/or the CMO to seat them."}{" "}
-            The Boardroom advises and never acts.
-          </p>
+          {auto ? (
+            <p className="text-xs text-slate-500">The system seats the CAO and COO and adds the CTO and CMO when the question touches their field. The Boardroom advises and never acts.</p>
+          ) : (
+            <div className="space-y-1 text-xs">
+              {seatProblem(seats) ? (
+                <p role="alert" className="text-amber-300">
+                  {seatProblem(seats)}
+                </p>
+              ) : (
+                <p className="text-slate-400">
+                  {seats.length} at the table: {seats.map((a) => a.toUpperCase()).join(", ")}. {roleNote(seats)}
+                </p>
+              )}
+              <p className="text-slate-500">Any combination of {MIN_SEATS} to 4 works. The Boardroom advises and never acts.</p>
+            </div>
+          )}
         </fieldset>
 
         <div className="flex justify-end">
-          <button type="submit" disabled={starting || running || !text.trim()} className={buttonPrimary}>
+          <button type="submit" disabled={starting || running || !text.trim() || (!auto && !canConvene(seats))} className={buttonPrimary}>
             {starting ? "Starting…" : "Convene the Boardroom"}
           </button>
         </div>

@@ -733,8 +733,8 @@ A session makes several model calls (50-70 s each when solo) and would time out 
 6. With no `GOVERNANCE_DATABASE_URL` the endpoints answer 503: a session nobody can poll is useless.
 
 ### The six rounds
-0. **Intake:** validate, then `select_participants()` picks 2-4 agents with a rationale (keyword rules, no model call). The CAO and COO always sit; the CTO and CMO join when the question touches their field. A caller can name agents; the CAO and COO are added if missing.
-1. **Parallel proposals:** every participant answers at once with `asyncio.gather`, so the round takes about **one** call, not N. A test measures it: four 0.4 s calls finish in about 0.4 s, with all four in flight together. A failed agent is dropped, and the session continues if at least 2 usable proposals remain, including the COO.
+0. **Intake:** validate, then `select_participants()` picks 2-4 agents with a rationale (keyword rules, no model call). With no agents named, the CAO and COO sit and the CTO and CMO join when the question touches their field. A caller can name ANY 2 to 4 different agents and nobody is added (Section 18.2).
+1. **Parallel proposals:** every participant answers at once with `asyncio.gather`, so the round takes about **one** call, not N. A test measures it: four 0.4 s calls finish in about 0.4 s, with all four in flight together. A failed agent is dropped, and the session continues if at least 2 usable proposals remain, including the chair (the COO when seated).
 2. **COO moderation:** one call is shown every question the agents flagged (de-duplicated) and rules on them. It maps conflicts, rules vetoes, decides which flags are critical (`critical_data_required`), asks targeted revision questions, and can rule the session off-topic.
 3. **Revisions:** at most 2, one targeted agent each. An agent that changes stance resolves its conflict. One that holds the same stance leaves it open, and after 2 loops the session escalates.
 4. **CAO synthesis:** exactly 2-3 options, each with `supported_by`, `dissent_from`, `unresolved_objection` and an optional `proposed_action`.
@@ -915,7 +915,7 @@ Browser-facing route handlers (all under `frontend/src/app/api/mc/`, each checks
 | 1c Plain-language authorization | CTO and CMO requests carry an optional `executive_summary` (three parts: `purpose`, `problem`, `risk`; see Section 18.1), asked for by `AUTHORIZATION_SUMMARY_PROMPT`. `AuthorizationDetail` shows it first ("In plain words"); the diff, commands, deployment steps and rollback plan are behind **Show technical details** (the audit log opens them by default). The CMO's proposed content and the claims to verify are NOT hidden: they are what is being approved. |
 | 2a Approve / Reject | The buttons already existed with a confirm step. They are now solid green and red, and the confirm text says the decision is final. No new endpoint. |
 | 2b Model tiers | Optional `model` field (`"haiku" \| "sonnet" \| "opus"`) on `/api/cao`, `/api/coo`, `/api/cto`, `/api/cmo`. `agents/model_tiers.py` maps a tier to a model id from an allow-list (`HAIKU_MODEL`, `SONNET_MODEL`, `OPUS_MODEL`; defaults `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`). A model id is never accepted (422). Left out, each agent keeps its own `*_MODEL`, so existing callers are unchanged. The response reports the `model` used. The chat has a picker (Sonnet default) and shows a one-line suggestion to try Opus when the typed question matches strategic keywords. |
-| 1d Council to Boardroom | Renamed everywhere in the UI. The Boardroom form lets the human choose who sits: Automatic, or "I'll choose" the CTO and CMO. The CAO and COO always sit (the backend adds them). The URLs and API paths are unchanged (`/council`). |
+| 1d Council to Boardroom | Renamed everywhere in the UI. The Boardroom form lets the human choose who sits (superseded by Section 18.2: all four agents are now independently selectable). The URLs and API paths are unchanged (`/council`). |
 
 ### Safety decisions (in code, not left to the model)
 - `chat_reply` is NOT covered by the constitutional score (the score reads `response`), so a `chat_reply` that says the agent itself approved, executed, sent, published or deployed something is **dropped** in code (`agents/chat_reply.py`, using `scoring.claims_action`) and the UI falls back to the full response. The same check drops an `executive_summary` that claims an action (a finding is recorded; the request itself survives).
@@ -957,5 +957,27 @@ Browser-facing route handlers (all under `frontend/src/app/api/mc/`, each checks
 - **The summary check is a pattern check.** It will not catch jargon made of ordinary words, and it cannot tell whether the three sentences are TRUE.
 - **Memory is per browser tab.** Opening a new tab, or clearing site data, starts a new conversation. It is not shared between devices.
 - **Sample sizes are tiny** (one run per case), so "mostly writes chat_reply" is an observation, not a rate.
+
+
+### 18.2 Boardroom: the CEO chooses who attends (any 2 to 4 agents)
+
+**Change.** The CAO and COO are no longer forced to attend. All four checkboxes (CAO, COO, CTO, CMO) are independent. Any combination of 2 to 4 different agents is allowed (11 combinations), and the backend adds nobody. Fewer than 2 different agents is refused (backend 422 `a council needs at least 2 different agents`; the UI disables the button and says how many are chosen). The page opens in "I'll choose" mode with the CAO and COO ticked, the table the Boardroom has always opened with; "Automatic" still exists and still seats the CAO and COO plus the CTO and CMO when the question touches their field.
+
+**Why this was not just a validation change.** The COO and CAO had procedural jobs hard-wired into the protocol: the COO moderates (round 2) and red-teams (round 5), and the CAO synthesizes the 2-3 options (round 4). The session also failed unless the COO gave a usable proposal. Letting the CEO drop them without handling that would have made every table without the COO fail. So `agents/council.py` now assigns the two seats from whoever sits (`assign_roles`, no model call):
+- **Chair** (moderation and red team): the COO when seated, otherwise the first seated of CTO, CMO, CAO.
+- **Synthesizer** (writes the options): the CAO when seated and not chairing, otherwise the first other seated agent. The agent that writes the options never also red-teams them.
+- With the COO and CAO seated nothing changes: the prompts are worded exactly as before (tests pin this). A stand-in is told in its prompt that it is standing in ("SEAT NOTE"), and a table of fewer than four is told who is seated, so nobody objects to an absent agent. The chair keeps the COO's authority to rule a veto and the "usable proposal" rule applies to the chair. The rationale shown on the session says who stands in.
+- The UI shows the stand-ins before you convene (for example "CTO will chair and run the red team (the COO is not at the table)"), and the debate labels now say "Chair" and "Red team" instead of naming the COO. `lib/mc-boardroom.ts` mirrors the backend rule; keep the two in step.
+
+**Tests.** Backend (`test_council_protocol.py`, 14 new): every one of the 11 combinations runs to RESOLVED with only seated agents speaking; the right agent chairs and synthesizes for each; the usual tables are unchanged; stand-in prompts; a stand-in chair can veto; the session fails cleanly if the chair gives no usable proposal; 1 agent or duplicates is a 422 with no session created; CTO+CMO and all four run end to end over HTTP. One older test that pinned "the CAO and COO are added" was rewritten. Frontend: `mission_control_boardroom.test.mjs` (9). Backend run touching this: 568 OK (36 skipped, database-backed). `tsc`, `eslint` and `next build` are clean.
+
+**Live check (the real model, council engine called directly, no database, one run each).** CTO+CMO: RESOLVED in about 19 s, 5 calls, 3 options, the CTO chaired and red-teamed, the CMO wrote the options, and nobody unseated spoke. All four: RESOLVED in about 21 s, 7 calls, 3 options, with the usual COO and CAO roles.
+
+**Not verified (DO NOT OVERSTATE):**
+- **Not clicked in a browser.** The checkboxes, the disabled button and the stand-in note are checked by types, lint, build and logic tests, not by looking at them.
+- **The HTTP route was tested with a fake model; the real-model runs bypassed HTTP and the database.** The two were not combined.
+- **Quality of a stand-in chair is unmeasured.** A CTO moderating and red-teaming, or a CMO writing the options, is a different perspective from the COO and CAO. The COO's operational and cost lens and the CAO's domain evidence are simply absent at such tables. Two live runs show it works, not that it is as good. Choose the table for the question.
+- **A two-agent table is thin.** With only two voices the "conflict" and "dissent" parts of the protocol have little to work with, and the process still spends about 5 calls.
+- **Follow-ups** carry earlier outcomes in the question text, and a follow-up can change the table.
 
 - **The longer system prompt costs a little more per call** (about 500 tokens for the chat-reply block, about 250 more for the summary block on the CTO and CMO).

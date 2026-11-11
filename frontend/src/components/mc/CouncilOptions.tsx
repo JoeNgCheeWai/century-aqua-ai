@@ -39,7 +39,7 @@ function OptionCard({ option, failureMode }: { option: CouncilOption; failureMod
       )}
 
       <div className="rounded-lg border border-red-400/25 bg-red-400/5 p-3">
-        <SectionTitle>COO red team: most likely failure mode</SectionTitle>
+        <SectionTitle>Red team: most likely failure mode</SectionTitle>
         <p className="text-sm text-red-100/90">{failure || "The red team recorded no failure mode for this option."}</p>
       </div>
 

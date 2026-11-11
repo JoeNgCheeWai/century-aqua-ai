@@ -4,11 +4,11 @@ import type { CouncilSession, CouncilTurn } from "@/lib/mc-types";
 /** The protocol's rounds, as the backend numbers them. Rounds 3 and 4 are targeted revisions (at most two). */
 const ROUND_LABEL: Record<number, string> = {
   1: "Round 1 · Proposals (in parallel)",
-  2: "Round 2 · COO moderation",
+  2: "Round 2 · Chair's moderation",
   3: "Round 3 · Revision",
   4: "Round 3 · Second revision",
-  5: "Round 4 · CAO synthesis",
-  6: "Round 5 · COO red team",
+  5: "Round 4 · Synthesis of the options",
+  6: "Round 5 · Red team",
 };
 
 function TurnRow({ turn }: { turn: CouncilTurn }) {
@@ -37,7 +37,7 @@ function TurnRow({ turn }: { turn: CouncilTurn }) {
 }
 
 /**
- * How the debate went: the participants and why, each round's turns, the COO's moderation notes, the conflicts (and
+ * How the debate went: the participants and why, each round's turns, the chair's moderation notes, the conflicts (and
  * whether they resolved), the hard-constraint vetoes, and the dissent kept on the record.
  */
 export default function DebateFlow({ session }: { session: CouncilSession }) {
@@ -73,7 +73,7 @@ export default function DebateFlow({ session }: { session: CouncilSession }) {
             </ul>
             {round === 2 && session.coo_moderation_notes && (
               <div className="mt-3 rounded-lg border border-cyan-400/20 bg-cyan-400/5 p-3">
-                <p className="text-[11px] uppercase tracking-wider text-cyan-300/80">COO moderation notes</p>
+                <p className="text-[11px] uppercase tracking-wider text-cyan-300/80">Chair&apos;s moderation notes</p>
                 <p className="mt-1 text-sm text-slate-200">{session.coo_moderation_notes}</p>
               </div>
             )}
@@ -83,7 +83,7 @@ export default function DebateFlow({ session }: { session: CouncilSession }) {
 
       {rounds.length > 0 && !rounds.includes(2) && session.coo_moderation_notes && (
         <Card>
-          <SectionTitle>COO moderation notes</SectionTitle>
+          <SectionTitle>Chair&apos;s moderation notes</SectionTitle>
           <p className="text-sm text-slate-200">{session.coo_moderation_notes}</p>
         </Card>
       )}
