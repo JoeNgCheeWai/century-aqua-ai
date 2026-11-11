@@ -34,7 +34,7 @@ from app.agents.cto_authorization import audit_summary, normalize_authorization_
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
-from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT
+from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 AGENT_ID = "cto"
 
 # The CTO's role prompt (thirteen pillars and the authorization workflow) plus the structured output format.
-CTO_ROLE_PROMPT = CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+CTO_ROLE_PROMPT = (
+    CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    + "\n\n" + CTO_EXECUTION_PLAN_PROMPT
+)
 
 # The constitution comes FIRST, then the CTO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(CTO_ROLE_PROMPT)

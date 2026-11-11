@@ -335,13 +335,48 @@ class AuthorizationApiTests(ApiBase):
         with mock.patch.dict(os.environ, {"GOVERNANCE_DATABASE_URL": "", "DATABASE_URL": ""}):
             self.assertEqual(self.post("approve").status_code, 503)
 
-    def test_the_backend_has_no_way_to_execute_what_was_approved(self):
-        # The decision module imports nothing that could run a change, and the response constant says so.
+    def test_the_approval_endpoint_can_only_open_a_pull_request_through_the_tool_router(self):
+        # Phase 6.6 changed this on purpose. Approving may now open a PULL REQUEST, and only through app/agents/tools.py. The
+        # guarantee that remains is that nothing here can run a shell command or reach GitHub by any other route.
         from app.api import authorization
 
-        source = Path(authorization.__file__).read_text(encoding="utf-8")
-        for forbidden in ("subprocess", "os.system", "exec(", "eval(", "requests", "httpx", "git "):
-            self.assertNotIn(forbidden, source.replace("a human must carry out", ""), forbidden)
+        import ast
+
+        tree = ast.parse(Path(authorization.__file__).read_text(encoding="utf-8"))
+        imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+        imported |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+        for forbidden in ("subprocess", "os", "requests", "httpx", "urllib", "urllib.request", "http.client", "socket", "shutil"):
+            self.assertNotIn(forbidden, imported, forbidden)
+        self.assertIn("app.agents", imported)  # `from app.agents import tools`: the ONE route to GitHub
+        code = " ".join(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        for forbidden in ("api.github.com", "GITHUB_PAT"):
+            self.assertNotIn(forbidden, code.replace(ast.get_docstring(tree) or "", ""), forbidden)
+        calls = {n.func.id if isinstance(n.func, ast.Name) else getattr(n.func, "attr", "") for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        for forbidden in ("system", "popen", "Popen", "exec", "eval"):
+            self.assertNotIn(forbidden, calls, forbidden)
+
+    def test_the_tool_router_has_no_merge_delete_force_or_shell_capability(self):
+        # The router is the only module allowed to reach GitHub. Whatever it can do must stay: branch, file, pull request.
+        from app.agents import tools
+
+        import ast
+
+        tree = ast.parse(Path(tools.__file__).read_text(encoding="utf-8"))
+        # Read the CODE, not the docstrings and comments (which rightly SAY "no merge, no force push").
+        doc_nodes = {id(n.body[0].value) for n in ast.walk(tree)
+                     if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef)) and n.body and isinstance(n.body[0], ast.Expr)
+                     and isinstance(n.body[0].value, ast.Constant) and isinstance(n.body[0].value.value, str)}
+        code_strings = " ".join(n.value for n in ast.walk(tree)
+                                if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in doc_nodes)
+        for forbidden in ("/merge", "DELETE", "force", "workflow_dispatch", "/releases", "/tags", "refs/heads/main", "refs/heads/master"):
+            self.assertNotIn(forbidden, code_strings, forbidden)
+        calls = {n.func.id if isinstance(n.func, ast.Name) else getattr(n.func, "attr", "") for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        for forbidden in ("system", "popen", "run", "Popen", "exec", "eval", "check_output", "check_call"):
+            self.assertNotIn(forbidden, calls, forbidden)
+        used = {n.args[1].value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_call"
+                and len(n.args) > 1 and isinstance(n.args[1], ast.Constant)}
+        self.assertEqual(used, {"GET", "POST", "PUT"})  # no DELETE, no PATCH: nothing can be removed or force-moved
+        self.assertEqual(sorted(tools.TOOLS), ["github_create_branch", "github_open_pr", "github_write_file", "mock_generate_image"])
 
 
 

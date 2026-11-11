@@ -50,6 +50,21 @@ class PlainSummary(BaseModel):
     risk: str  # what could go wrong and what protects us (never a rating: the risk level is computed in code)
 
 
+class PlanFile(BaseModel):
+    path: str
+    content: str  # the COMPLETE new file text
+    commit_message: str
+
+
+class ExecutionPlan(BaseModel):
+    """What approving would do (Phase 6.6): open a pull request from this branch. Built and checked by execution_plan.py."""
+
+    branch_name: str  # always under agent/
+    files_to_update: list[PlanFile]
+    pr_title: str
+    pr_body: str = ""
+
+
 class AuthorizationRequest(BaseModel):
     """A proposed change that waits for a human. Built by app/agents/cto_authorization.py."""
 
@@ -60,6 +75,7 @@ class AuthorizationRequest(BaseModel):
     proposed_code_diff: str | None = None  # text for review, never applied by the CTO
     proposed_commands: list[str] = Field(default_factory=list)  # text for review, never run by the CTO
     rollback_plan: str | None = None
+    execution_plan: ExecutionPlan | None = None  # Phase 6.6; null unless the agent sent a plan that passed validation
     # Forced by code in cto_authorization.py. The Literal types make the API contract refuse anything else.
     status: Literal["pending_human_approval"] = "pending_human_approval"
     requires_human_approval: Literal[True] = True

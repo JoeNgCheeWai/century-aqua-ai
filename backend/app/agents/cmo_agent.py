@@ -35,7 +35,7 @@ from app.agents.cmo_authorization import audit_summary, normalize_authorization_
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
-from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT
+from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CMO_UI_PROMPT
 from app.prompts.cmo_prompt import CMO_REASONING_PROMPT, CMO_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,10 @@ logger = logging.getLogger(__name__)
 AGENT_ID = "cmo"
 
 # The CMO's role prompt (four pillars, claims discipline, authorization workflow) plus the structured output format.
-CMO_ROLE_PROMPT = CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+CMO_ROLE_PROMPT = (
+    CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    + "\n\n" + CMO_UI_PROMPT
+)
 
 # The constitution comes FIRST, then the CMO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(CMO_ROLE_PROMPT)

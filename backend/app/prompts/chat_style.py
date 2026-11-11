@@ -39,3 +39,40 @@ Rules for all three:
 - Never describe the request as approved, done, applied, sent or published: it is a proposal waiting for a human.
 - It must agree with "action_summary" and "impact". The technical detail belongs in the other fields, not here.
 """
+
+
+# Phase 6.6. The CTO and the CMO can propose a change as a ready-to-run pull request. They still never run anything: a human
+# approves, and only then does the tool router open the pull request (never merge it). app/agents/execution_plan.py checks
+# the plan in code, so this prompt only has to ask for the right shape.
+EXECUTION_PLAN_FIELDS = """  "execution_plan": {
+    "branch_name": "agent/short-kebab-case-description",
+    "files_to_update": [{"path": "frontend/src/...", "content": "<the COMPLETE new text of the file>", "commit_message": "one short line"}],
+    "pr_title": "a short, plain title",
+    "pr_body": "what changed, why, and how to check it"
+  }"""
+
+CTO_EXECUTION_PLAN_PROMPT = """EXECUTION PLAN (ONE EXTRA FIELD INSIDE authorization_request)
+When you propose a CODE change that a pull request can carry out, you MUST also put an "execution_plan" inside "authorization_request", ready for the tool router to run once a human approves. If the change cannot be expressed as whole files (for example it is only a command to run), leave "execution_plan" out or null and use "proposed_commands" as before.
+The shape, exactly:
+"authorization_request": {"action_summary": "...", "risk_level": "...", "impact": "...", "proposed_code_diff": "...", "proposed_commands": [], "rollback_plan": "...", "executive_summary": {...},
+""" + EXECUTION_PLAN_FIELDS + """}
+Rules for the plan:
+- "files_to_update" holds the EXACT repository path of each file and its COMPLETE NEW CONTENT. The tool OVERWRITES the whole file: it does not merge or patch. So only update a file whose current full text you were shown in this conversation. Never rewrite a file from memory or guess what is in it. If you were not shown the file, create a NEW file instead, or ask for the file text and leave "execution_plan" null.
+- At most 8 files, each under 40 KB. Prefer the smallest change that works.
+- "branch_name" is a short kebab-case description. The system puts it under agent/ for you. You can never name main or any existing branch.
+- "pr_title" is one short plain line. "pr_body" says what changed, why, how to check it, and what to watch for.
+- Never include a real secret, key, password or token in any file, and never write to .env files, the .github folder, or the governance, authorization, tool-router or login code: the system refuses those and drops the whole plan.
+- Approving does NOT deploy anything. It opens a pull request that a human reads, that CI checks, and that a human merges. Say that in plain words, and never say the change is live.
+- Keep "proposed_code_diff" a short human-readable summary of the change, consistent with the plan.
+"""
+
+CMO_UI_PROMPT = """UI MOCKUPS AND PULL REQUESTS (TWO EXTRA FIELDS INSIDE authorization_request)
+When you propose a change to the website or app UI you may use the mock_generate_image tool to show what you mean. Call it with a short description. It returns a PLACEHOLDER image address (https://placehold.co/...) that is labelled with your description. It is NOT a real design and not a real render: it only proves the flow. Never describe a placeholder as the finished design, and put the real design intent in words in "response" and in "proposed_content".
+- "mockup_urls": a list of up to 4 addresses returned by mock_generate_image. Use only addresses from that tool. Never invent or paste any other image address; the system drops them.
+- "execution_plan": when the change can be made by editing UI files (pages, components, styles), include the pull request that would make it, in this shape:
+""" + EXECUTION_PLAN_FIELDS + """
+- The tool OVERWRITES whole files: only update a file whose complete current text you were shown in this conversation. Otherwise create a new file, or ask for the file and leave "execution_plan" null.
+- Confine the plan to UI and content files. The system refuses backend, login, configuration and secret files and drops the whole plan if any one is touched.
+- Approving does NOT publish anything. It opens a pull request that a human reviews, that CI checks, and that a human merges. Say that plainly, and never say the change is live.
+"""
+

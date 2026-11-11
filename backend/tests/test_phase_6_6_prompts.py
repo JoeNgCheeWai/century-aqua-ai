@@ -1,0 +1,96 @@
+"""
+Phase 6.6 prompt tests: the CTO is told to output an execution_plan, the CMO is told about mock_generate_image and that
+mockups are placeholders, and neither is ever told that approving deploys or publishes anything.
+
+    python -m unittest tests.test_phase_6_6_prompts   (from backend/)
+"""
+
+import json
+import sys
+import unittest
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.agents import cao_agent, cmo_agent, coo_agent, cto_agent  # noqa: E402
+from app.prompts import chat_style  # noqa: E402
+
+
+class CtoPromptTests(unittest.TestCase):
+    def test_the_cto_is_told_to_output_an_execution_plan_with_the_four_parts(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        for needle in ("execution_plan", "branch_name", "files_to_update", "pr_title", "pr_body", "COMPLETE NEW CONTENT", "EXACT repository path"):
+            self.assertIn(needle, text)
+        self.assertIn(chat_style.CTO_EXECUTION_PLAN_PROMPT.strip(), cto_agent.BASE_SYSTEM_PROMPT)
+
+    def test_the_cto_is_warned_that_the_tool_overwrites_whole_files_and_not_to_guess_a_file_it_was_not_shown(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        self.assertIn("OVERWRITES the whole file", text)
+        self.assertIn("only update a file whose current full text you were shown", text)
+
+    def test_the_cto_is_told_approving_opens_a_pull_request_and_does_not_deploy(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        self.assertIn("Approving does NOT deploy anything", text)
+        self.assertIn("opens a pull request", text)
+        self.assertIn("never say the change is live", text)
+
+    def test_the_cto_is_told_which_files_the_system_refuses(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        for needle in (".env", ".github", "secret", "main"):
+            self.assertIn(needle, text)
+
+    def test_the_other_executives_are_not_given_the_plan_or_ui_instructions(self):
+        for module in (cao_agent, coo_agent):
+            self.assertNotIn("execution_plan", module.BASE_SYSTEM_PROMPT, module.__name__)
+            self.assertNotIn("mock_generate_image", module.BASE_SYSTEM_PROMPT, module.__name__)
+        self.assertNotIn("mock_generate_image", cto_agent.BASE_SYSTEM_PROMPT)
+        self.assertNotIn("CTO_EXECUTION_PLAN", cmo_agent.BASE_SYSTEM_PROMPT)
+
+
+class CmoPromptTests(unittest.TestCase):
+    def test_the_cmo_is_told_it_can_use_mock_generate_image_for_ui_mockups(self):
+        text = chat_style.CMO_UI_PROMPT
+        self.assertIn("mock_generate_image", text)
+        self.assertIn("mockup_urls", text)
+        self.assertIn("https://placehold.co/", text)
+        self.assertIn(chat_style.CMO_UI_PROMPT.strip(), cmo_agent.BASE_SYSTEM_PROMPT)
+
+    def test_the_cmo_is_told_a_mockup_is_a_placeholder_not_a_design_and_never_to_invent_an_address(self):
+        text = chat_style.CMO_UI_PROMPT
+        self.assertIn("PLACEHOLDER", text)
+        self.assertIn("NOT a real design", text)
+        self.assertIn("Never invent", text)
+
+    def test_the_cmo_may_include_a_pull_request_plan_for_ui_files_and_is_told_approving_publishes_nothing(self):
+        text = chat_style.CMO_UI_PROMPT
+        for needle in ("execution_plan", "branch_name", "files_to_update", "UI and content files", "OVERWRITES whole files"):
+            self.assertIn(needle, text)
+        self.assertIn("Approving does NOT publish anything", text)
+        self.assertIn("never say the change is live", text)
+
+
+class SharedShapeTests(unittest.TestCase):
+    def test_the_example_plan_in_both_prompts_is_the_same_shape_the_validator_accepts(self):
+        from app.agents import execution_plan as ep
+
+        block = chat_style.EXECUTION_PLAN_FIELDS.strip()
+        example = json.loads("{" + block + "}")["execution_plan"]
+        self.assertEqual(set(example), {"branch_name", "files_to_update", "pr_title", "pr_body"})
+        self.assertEqual(set(example["files_to_update"][0]), {"path", "content", "commit_message"})
+        filled = {**example, "files_to_update": [{**example["files_to_update"][0], "path": "frontend/src/a.ts", "content": "x"}]}
+        plan, findings = ep.normalize_execution_plan(filled)
+        self.assertIsNotNone(plan, findings)
+
+    def test_the_reasoning_prompts_json_examples_are_untouched_by_phase_6_6(self):
+        from app.prompts import cmo_prompt, cto_prompt
+
+        for prompt in (cto_prompt.CTO_REASONING_PROMPT, cmo_prompt.CMO_REASONING_PROMPT):
+            example = json.loads(prompt[prompt.index('{\n  "response"'): prompt.index("\n}\n") + 2])
+            self.assertNotIn("chat_reply", example)
+            self.assertIsNone(example["authorization_request"])  # still null in the example: the plan is an optional extra
+
+
+if __name__ == "__main__":
+    unittest.main()

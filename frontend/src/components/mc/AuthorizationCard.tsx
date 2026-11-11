@@ -3,8 +3,9 @@
 import { useState } from "react";
 import AuthorizationDetail from "@/components/mc/AuthorizationDetail";
 import { ActionBadge, AgentChip, Card, ErrorNote, buttonGhost } from "@/components/mc/ui";
+import ExecutionResult from "@/components/mc/ExecutionResult";
 import { McError, mc, when } from "@/lib/mc-client";
-import type { AuditEntry, HumanAction } from "@/lib/mc-types";
+import type { AuditEntry, ExecutionOutcome, HumanAction } from "@/lib/mc-types";
 
 interface Decision {
   audit_id: number;
@@ -13,6 +14,8 @@ interface Decision {
   human_action_by: string | null;
   executed: boolean;
   note: string;
+  /** Present only when the request had an execution plan and this was an approval (Phase 6.6). */
+  execution?: ExecutionOutcome;
 }
 
 /**
@@ -32,10 +35,12 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
     setBusy(true);
     setError(null);
     try {
-      setDecision(await mc<Decision>(`/authorization/${entry.id}/${action}`, { method: "POST" }));
+      const result = await mc<Decision>(`/authorization/${entry.id}/${action}`, { method: "POST" });
+      setDecision(result);
       setConfirming(null);
-      // Keep the confirmation visible for a moment, then reload (the item leaves the Pending view).
-      setTimeout(onDecided, 2500);
+      // Keep the confirmation visible for a moment, then reload (the item leaves the Pending view). When a pull request was
+      // involved, stay longer: the person needs to read the result and use the link.
+      setTimeout(onDecided, result.execution ? 20000 : 2500);
     } catch (e) {
       if (!(e instanceof McError && e.status === 401)) setError((e as Error).message);
       // 409: somebody already decided it. Reload so the card shows the real state.
@@ -73,6 +78,11 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
           {decision.human_action === "Approved" ? "✅" : "❌"} Recorded as <strong>{decision.human_action}</strong> {when(decision.human_action_at)}. {decision.note}
         </div>
       )}
+      {decision?.execution && (
+        <div className="rounded-lg border border-blue-400/30 bg-blue-500/5 p-3">
+          <ExecutionResult outcome={decision.execution} />
+        </div>
+      )}
       {error && <ErrorNote message={error} />}
 
       {pending && (
@@ -81,8 +91,10 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
             <>
               <span className="text-sm text-slate-300">
                 {confirming === "approve"
-                  ? "Are you sure you want to approve this? It records your decision and cannot be changed; nothing is run or published."
-                  : "Are you sure you want to reject this? It records your decision and cannot be changed."}
+                  ? request.execution_plan
+                    ? "Are you sure you want to approve this? It records your decision, cannot be changed, and OPENS A PULL REQUEST on GitHub. Nothing is merged or published."
+                    : "Are you sure you want to approve this? It records your decision and cannot be changed; nothing is run or published."
+                  : "Are you sure you want to reject this? It records your decision and cannot be changed. Nothing is run."}
               </span>
               <button
                 disabled={busy}
@@ -93,7 +105,7 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
                     : "rounded-lg bg-red-500 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
                 }
               >
-                {busy ? "Recording…" : `Yes, ${confirming}`}
+                {busy ? (confirming === "approve" && request.execution_plan ? "Opening the pull request…" : "Recording…") : `Yes, ${confirming}`}
               </button>
               <button disabled={busy} onClick={() => setConfirming(null)} className={buttonGhost}>
                 Cancel

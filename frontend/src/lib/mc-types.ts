@@ -11,6 +11,23 @@ export interface Paged<T> {
   offset: number;
 }
 
+/** What approving would do (Phase 6.6): open a pull request from this branch. It is never merged by the system. */
+export interface ExecutionPlan {
+  branch_name: string;
+  files_to_update: { path: string; content: string; commit_message: string }[];
+  pr_title: string;
+  pr_body: string;
+}
+
+/** What happened after approval (Phase 6.6), stored on the authorization request by the backend. */
+export interface ExecutionOutcome {
+  status: "running" | "succeeded" | "failed" | "refused" | "unconfigured" | "already_claimed";
+  steps?: { tool: string; ok: boolean; message: string }[];
+  pr_url?: string | null;
+  branch?: string | null;
+  error?: string | null;
+}
+
 /** What is it for, what problem does it solve, what could go wrong. The risk RATING is the badge, computed by the backend. */
 export interface PlainSummary {
   purpose: string;
@@ -31,6 +48,11 @@ export interface AuthorizationRequest {
   deployment_commands?: string[];
   rollback_plan?: string | null;
   claims_to_verify?: string[];
+  /** Phase 6.6: placeholder images (placehold.co) from the CMO's mock_generate_image tool. */
+  mockup_urls?: string[];
+  execution_plan?: ExecutionPlan | null;
+  /** Written by the backend after approval when there was a plan. Absent before. */
+  execution?: ExecutionOutcome | null;
   status: string;
   requires_human_approval: boolean;
   executed: boolean;

@@ -49,8 +49,11 @@ import re
 from typing import Any
 
 from app.agents.cto_authorization import RISK_LEVELS, STATUS_PENDING
+from app.agents.execution_plan import describe as describe_plan
+from app.agents.execution_plan import higher_risk, normalize_execution_plan, plan_risk_floor, plan_text
 from app.agents.plain_summary import normalize_plain_summary
 
+MOCKUP_PREFIX = "https://placehold.co/"
 MAX_SUMMARY_CHARS = 600
 MAX_IMPACT_CHARS = 2000
 MAX_CONTENT_CHARS = 12000
@@ -162,6 +165,30 @@ def _string_list(value: Any, *, max_items: int, limit: int) -> list[str]:
     return [item for item in cleaned if item][:max_items]
 
 
+MAX_MOCKUPS = 4
+
+
+def clean_mockup_urls(value: Any) -> tuple[list[str], list[str]]:
+    """
+    Mockup image URLs from the CMO. ONLY the placeholder host that mock_generate_image uses is accepted: the CMO has no real
+    image generator yet, so any other address would be an invented link, and a link to an arbitrary site does not belong in
+    an approval screen. Anything else is dropped (with a finding), and the rest of the request is unaffected.
+    """
+    if value is None:
+        return [], []
+    items = value if isinstance(value, (list, tuple)) else [value]
+    kept: list[str] = []
+    dropped = 0
+    for item in items:
+        if isinstance(item, str) and item.strip().startswith(MOCKUP_PREFIX) and " " not in item.strip() and len(item.strip()) <= 300:
+            if item.strip() not in kept:
+                kept.append(item.strip())
+        else:
+            dropped += 1
+    findings = [f"{dropped} mockup URL(s) dropped (only {MOCKUP_PREFIX}... placeholder images are accepted)"] if dropped else []
+    return kept[:MAX_MOCKUPS], findings
+
+
 def _risk(value: Any) -> str | None:
     """The model's risk level if it is a known one, else None (the caller then fails safe to 'high')."""
     if isinstance(value, str) and value.strip().lower() in RISK_LEVELS:
@@ -188,17 +215,23 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
     rollback = _text(raw.get("rollback_plan"), MAX_ROLLBACK_CHARS) or None
     claims = _string_list(raw.get("claims_to_verify"), max_items=MAX_CLAIMS, limit=MAX_CLAIM_CHARS)
 
+    # Phase 6.6: an optional execution_plan (a pull request that edits the site's UI files) and optional mockup images.
+    plan, plan_findings = normalize_execution_plan(raw.get("execution_plan"))
+    mockups, mockup_findings = clean_mockup_urls(raw.get("mockup_urls"))
+
     if not summary:
         return None, ["authorization_request had no action_summary; dropped"]
-    if not content and not steps:
-        return None, ["authorization_request had neither proposed_content nor deployment_commands; dropped"]
+    if not content and not steps and plan is None:
+        return None, [*plan_findings, "authorization_request had neither proposed_content, deployment_commands nor a valid execution_plan; dropped"]
 
-    findings: list[str] = []
+    findings: list[str] = [*plan_findings, *mockup_findings]
     declared = _risk(raw.get("risk_level"))
     if declared is None:
         declared = "high"
         findings.append("authorization_request risk_level missing or unknown; set to high")
-    floor = risk_floor(content, steps, claims)
+    floor = higher_risk(risk_floor(content, steps, claims), plan_risk_floor(plan))
+    if plan is not None:
+        floor = higher_risk(floor, risk_floor(plan_text(plan), [], []))  # the files' text goes through the same claim patterns
     level = declared if _ORDER[declared] >= _ORDER[floor] else floor
     if level != declared:
         findings.append(f"authorization_request risk_level raised from {declared} to {level} (the text matches a {floor}-risk pattern)")
@@ -227,6 +260,9 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
         "deployment_commands": steps,
         "rollback_plan": rollback,
         "claims_to_verify": claims,
+        # Phase 6.6: placeholder mockup images (from mock_generate_image) and the pull request approving would open.
+        "mockup_urls": mockups,
+        "execution_plan": plan,
         # Forced by code. Nothing the model writes can mark a request approved, published or executed.
         "status": STATUS_PENDING,
         "requires_human_approval": True,
@@ -257,6 +293,10 @@ def audit_summary(request: dict[str, Any] | None) -> str:
         lines.extend(f"    {step}" for step in request["deployment_commands"])
     if request.get("proposed_content"):
         lines.append("- Proposed content: included in the structured authorization_request.")
+    if request.get("mockup_urls"):
+        lines.append(f"- Mockup images (placeholders, not real designs): {len(request['mockup_urls'])}")
+    if request.get("execution_plan"):
+        lines.append("- " + describe_plan(request["execution_plan"]))
     if request.get("rollback_plan"):
         lines.append(f"- Rollback plan: {request['rollback_plan']}")
     return "\n".join(lines)

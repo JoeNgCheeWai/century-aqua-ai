@@ -49,6 +49,9 @@ services:
         value: claude-sonnet-5-5
       - key: OPUS_MODEL
         value: claude-opus-5-5
+      # Phase 6.6: the fine-grained GitHub token the tool router uses to open pull requests (never to merge). Backend only.
+      - key: GITHUB_PAT
+        sync: false          # secret; Contents and Pull requests read/write on the one repository
       # Phase 6 Mission Control: ADMIN_PIN and ADMIN_SESSION_SECRET are read by the Next.js FRONTEND (Vercel), not by this
       # backend. They are listed here as the project's record of every secret; set the same two on the frontend host.
       # The backend's Mission Control endpoints (/api/audit-logs, /api/authorization/*, /api/council/sessions) use

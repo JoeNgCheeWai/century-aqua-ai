@@ -8,8 +8,11 @@ migration (it adds AgentAuditLog.humanActionAt and humanActionBy). Only the DECI
 approve and reject answer 503 until the migration is applied, and nothing else is affected.
 
 A DECISION IS A RECORD, NOT AN EXECUTION. decide_authorization only sets humanAction, humanActionAt and humanActionBy on
-a row that carries an authorization request and is still Pending. Nothing here, or anywhere in the backend, runs the
-proposed change. AgentAuditLog.timestamp (when the agent answered) is never touched.
+a row that carries an authorization request and is still Pending. Nothing in THIS module runs anything. (Phase 6.6: the
+approve endpoint may afterwards hand an approved request that carries an execution_plan to the tool router, app/agents/
+tools.py. This module only stores the outcome: claim_execution takes a once-only claim, record_execution stores the result
+inside the same authorizationRequest JSON, so it shows in Mission Control.) AgentAuditLog.timestamp (when the agent
+answered) is never touched.
 """
 
 from __future__ import annotations
@@ -137,6 +140,61 @@ async def decide_authorization(audit_id: int, action: str, actor: str) -> tuple[
     if action not in DECISIONS:
         raise ValueError(f"action must be one of {tuple(DECISIONS)}")
     return await db.run(_decide_sync, audit_id, DECISIONS[action], actor)
+
+
+# ---------------------------------------------------------------- execution of an approved plan (Phase 6.6)
+
+def _read_request_sync(audit_id: int) -> dict[str, Any] | None:
+    """The stored authorization request of one audit row, parsed, or None."""
+    with db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT "authorizationRequest" FROM "AgentAuditLog" WHERE "id"=%s', (audit_id,))
+        rows = db.fetch_all(cur)
+    value = parse_json(rows[0]["authorizationRequest"]) if rows else None
+    return value if isinstance(value, dict) else None
+
+
+async def read_authorization_request(audit_id: int) -> dict[str, Any] | None:
+    return await db.run(_read_request_sync, audit_id)
+
+
+def _claim_execution_sync(audit_id: int) -> bool:
+    """
+    Claim the right to execute, ONCE. One atomic UPDATE that only succeeds while the row is Approved and its request has an
+    execution_plan that has not been claimed yet, and that records the claim (``execution``: {"status": "running"}) in the
+    same statement. Two simultaneous callers, or a retry after a crash, cannot both claim it, so one approval can open at
+    most one pull request.
+    """
+    with db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'UPDATE "AgentAuditLog" SET "authorizationRequest" = jsonb_set("authorizationRequest", \'{execution}\', CAST(%s AS jsonb)) '
+            'WHERE "id"=%s AND "humanAction"=CAST(%s AS "HumanAction") AND ' + _HAS_REQUEST + ' '
+            "AND jsonb_typeof(\"authorizationRequest\"->'execution_plan') = 'object' AND NOT jsonb_exists(\"authorizationRequest\", 'execution') "
+            'RETURNING "id"',
+            (db.json_param({"status": "running"}), audit_id, "Approved"),
+        )
+        return bool(db.fetch_all(cur))
+
+
+async def claim_execution(audit_id: int) -> bool:
+    return await db.run(_claim_execution_sync, audit_id)
+
+
+def _record_execution_sync(audit_id: int, execution: dict[str, Any]) -> bool:
+    """Replace the claim with the final result (status, steps, pr_url, error) inside the same authorization request."""
+    with db.transaction() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            'UPDATE "AgentAuditLog" SET "authorizationRequest" = jsonb_set("authorizationRequest", \'{execution}\', CAST(%s AS jsonb)) '
+            'WHERE "id"=%s AND ' + _HAS_REQUEST + ' RETURNING "id"',
+            (db.json_param(execution), audit_id),
+        )
+        return bool(db.fetch_all(cur))
+
+
+async def record_execution(audit_id: int, execution: dict[str, Any]) -> bool:
+    return await db.run(_record_execution_sync, audit_id, execution)
 
 
 # ---------------------------------------------------------------- council sessions

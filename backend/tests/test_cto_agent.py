@@ -783,7 +783,7 @@ class CtoAuditRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(stored),
             {"action_summary", "executive_summary", "risk_level", "impact", "proposed_code_diff", "proposed_commands",
-             "rollback_plan", "status", "requires_human_approval", "executed"},
+             "rollback_plan", "execution_plan", "status", "requires_human_approval", "executed"},
         )
         # The HARDENED request is what is stored, not what the model wrote (it claimed approved/executed/low).
         self.assertEqual(stored["status"], "pending_human_approval")

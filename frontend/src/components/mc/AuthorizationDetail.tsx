@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Code, List, RiskBadge, SectionTitle } from "@/components/mc/ui";
+import ExecutionResult from "@/components/mc/ExecutionResult";
 import type { AuthorizationRequest } from "@/lib/mc-types";
 
 /**
@@ -26,7 +27,9 @@ export default function AuthorizationDetail({
   const [open, setOpen] = useState(startOpen);
   const commands = request.proposed_commands?.length ? request.proposed_commands : request.deployment_commands ?? [];
   const isContent = agentId === "cmo" || (!!request.proposed_content && !request.proposed_code_diff);
-  const hasTechnical = !!request.proposed_code_diff || commands.length > 0 || !!request.rollback_plan;
+  const plan = request.execution_plan ?? null;
+  const outcome = request.execution ?? null;
+  const hasTechnical = !!request.proposed_code_diff || commands.length > 0 || !!request.rollback_plan || !!plan;
   const summary = request.executive_summary;
 
   return (
@@ -74,6 +77,39 @@ export default function AuthorizationDetail({
         </div>
       )}
 
+      {(request.mockup_urls?.length ?? 0) > 0 && (
+        <div>
+          <SectionTitle>Mockups (placeholder images, not real designs)</SectionTitle>
+          <div className="flex flex-wrap gap-3">
+            {request.mockup_urls?.map((url) => (
+              // A plain <img>: these are small external placeholders, and the backend only accepts the placehold.co host.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={url} src={url} alt="Placeholder mockup" loading="lazy" className="h-28 w-auto rounded-lg border border-slate-700" />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {plan && (
+        <div className="rounded-lg border border-blue-400/30 bg-blue-500/5 p-3">
+          <SectionTitle>What approving will do</SectionTitle>
+          {outcome ? (
+            <ExecutionResult outcome={outcome} />
+          ) : (
+            <>
+              <p className="text-sm text-slate-200">
+                It will open a <strong>pull request</strong> named “{plan.pr_title}” with {plan.files_to_update.length} file
+                {plan.files_to_update.length === 1 ? "" : "s"} on a new branch, <code className="text-cyan-200">{plan.branch_name}</code>.
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Nothing goes live: the pull request is <strong>not merged</strong>. You review it on GitHub and merge it yourself, and an automatic check
+                confirms it builds first.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
       {hasTechnical && (
         <div>
           <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="text-xs text-cyan-300 hover:underline">
@@ -85,6 +121,19 @@ export default function AuthorizationDetail({
                 <div>
                   <SectionTitle>Proposed code diff (for review, never applied by the agent)</SectionTitle>
                   <Code>{request.proposed_code_diff}</Code>
+                </div>
+              )}
+              {plan && (
+                <div>
+                  <SectionTitle>Files the pull request would contain ({plan.files_to_update.length})</SectionTitle>
+                  <ul className="space-y-1 text-sm text-slate-300">
+                    {plan.files_to_update.map((file) => (
+                      <li key={file.path}>
+                        <code className="text-cyan-200">{file.path}</code> <span className="text-slate-500">· {file.content.length.toLocaleString()} characters</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {plan.pr_body && <p className="mt-2 whitespace-pre-wrap text-sm text-slate-400">{plan.pr_body}</p>}
                 </div>
               )}
               {commands.length > 0 && (
@@ -105,7 +154,10 @@ export default function AuthorizationDetail({
       )}
 
       <p className="text-xs text-slate-500">
-        {request.status.replace(/_/g, " ")} · executed: {String(request.executed)}. Approving records your decision only; nothing is run or published by this system.
+        {request.status.replace(/_/g, " ")} · executed: {String(request.executed)}.{" "}
+        {plan
+          ? "Approving records your decision and opens a pull request. Nothing is merged, deployed or published by this system."
+          : "Approving records your decision only; nothing is run or published by this system."}
       </p>
     </div>
   );

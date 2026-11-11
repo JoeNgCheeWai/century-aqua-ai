@@ -38,6 +38,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.agents.execution_plan import describe as describe_plan
+from app.agents.execution_plan import higher_risk, normalize_execution_plan, plan_risk_floor, plan_text
 from app.agents.plain_summary import normalize_plain_summary
 
 RISK_LEVELS = ("low", "medium", "high", "critical")
@@ -145,17 +147,24 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
     commands = _commands(raw.get("proposed_commands"))
     rollback = _text(raw.get("rollback_plan"), MAX_ROLLBACK_CHARS) or None
 
+    # Phase 6.6: an optional execution_plan (branch, complete files, PR text). It is validated whole-or-nothing. A refused
+    # plan is dropped with a finding; the rest of the request can still stand on its diff or commands.
+    plan, plan_findings = normalize_execution_plan(raw.get("execution_plan"))
+
     if not summary:
         return None, ["authorization_request had no action_summary; dropped"]
-    if not diff and not commands:
-        return None, ["authorization_request had neither a proposed_code_diff nor proposed_commands; dropped"]
+    if not diff and not commands and plan is None:
+        return None, [*plan_findings, "authorization_request had neither a proposed_code_diff, proposed_commands nor a valid execution_plan; dropped"]
 
-    findings: list[str] = []
+    findings: list[str] = list(plan_findings)
     declared = _risk(raw.get("risk_level"))
     if declared is None:
         declared = "high"
         findings.append("authorization_request risk_level missing or unknown; set to high")
-    floor = risk_floor(commands, diff)
+    floor = higher_risk(risk_floor(commands, diff), plan_risk_floor(plan))
+    # The plan's CODE is read by the same patterns as a diff (a secret, a destructive command written into a file).
+    if plan is not None:
+        floor = higher_risk(floor, risk_floor([], plan_text(plan)))
     level = declared if _ORDER[declared] >= _ORDER[floor] else floor
     if level != declared:
         findings.append(f"authorization_request risk_level raised from {declared} to {level} (proposed text matches a {floor}-risk pattern)")
@@ -176,6 +185,9 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
         "proposed_code_diff": diff,
         "proposed_commands": commands,
         "rollback_plan": rollback,
+        # Phase 6.6: what approving would do. None unless the agent sent a plan that passed validation. Approving opens a
+        # pull request from it (never a merge); the outcome is stored later under "execution".
+        "execution_plan": plan,
         # Forced by code. Nothing the model writes can mark a request approved or executed.
         "status": STATUS_PENDING,
         "requires_human_approval": True,
@@ -204,6 +216,8 @@ def audit_summary(request: dict[str, Any] | None) -> str:
         lines.extend(f"    {command}" for command in request["proposed_commands"])
     if request.get("proposed_code_diff"):
         lines.append("- Proposed code diff: included in the structured authorization_request.")
+    if request.get("execution_plan"):
+        lines.append("- " + describe_plan(request["execution_plan"]))
     if request.get("rollback_plan"):
         lines.append(f"- Rollback plan: {request['rollback_plan']}")
     return "\n".join(lines)

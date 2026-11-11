@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.cmo_agent import AGENT_ID, get_cmo_result
 from app.api.cao import CAORequest, CAOResponse
-from app.api.cto import PlainSummary
+from app.api.cto import ExecutionPlan, PlainSummary
 from app.api.security import require_actor, require_cmo_key
 from app.governance import audit
 
@@ -55,6 +55,8 @@ class CMOAuthorizationRequest(BaseModel):
     deployment_commands: list[str] = Field(default_factory=list)  # steps for a human to carry out; never run by the CMO
     rollback_plan: str | None = None
     claims_to_verify: list[str] = Field(default_factory=list)  # factual claims a human must substantiate first
+    mockup_urls: list[str] = Field(default_factory=list)  # Phase 6.6: placeholder images only (placehold.co)
+    execution_plan: ExecutionPlan | None = None  # Phase 6.6; null unless the agent sent a plan that passed validation
     # Forced by code in cmo_authorization.py. The Literal types make the API contract refuse anything else.
     status: Literal["pending_human_approval"] = "pending_human_approval"
     requires_human_approval: Literal[True] = True

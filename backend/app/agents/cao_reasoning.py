@@ -65,18 +65,65 @@ class ParsedAnswer:
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 
+_CLOSER_FOR = {"{": "}", "[": "]"}
+
+
+def fix_closers(text: str) -> str:
+    """
+    Repair WRONG or EXTRA closing brackets outside strings, and nothing else (Phase 6.6).
+
+    A model writing a deeply nested object (authorization_request > execution_plan > files_to_update > file) sometimes closes
+    it with one ``}`` too many, or a ``]`` where a ``}`` belongs. The data inside is intact; only the punctuation is off, and
+    a strict parse then throws the whole answer away, including the plan. This walks the text outside strings with a stack:
+    a closer that does not match the open bracket is replaced by the right one, and a closer with nothing open is dropped.
+
+    What it NEVER does: add a missing closer (so a reply cut off at the token limit stays unparseable and is still refused,
+    never completed), or touch anything inside a string. Text that already parses is not changed by it.
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in _CLOSER_FOR:
+            stack.append(ch)
+        elif ch in "}]":
+            if not stack:
+                continue  # nothing is open: an extra closer, dropped
+            ch = _CLOSER_FOR[stack.pop()]  # the one that matches what is actually open
+        out.append(ch)
+    return "".join(out)
+
+
 def _load_json_object(raw: str) -> dict[str, Any] | None:
-    """The first-to-last-brace JSON object in ``raw`` (tolerates a code fence or stray prose), or None."""
+    """
+    The JSON object in ``raw`` (tolerates a code fence, stray prose, trailing junk after the object, and wrong or extra
+    closing brackets), or None. A truncated object is NOT completed: it returns None.
+    """
     text = _FENCE.sub("", raw or "")
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         return None
-    try:
-        # strict=False allows raw line breaks inside strings, which models often emit.
-        data = json.loads(text[start : end + 1], strict=False)
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    body = text[start : end + 1]
+    decoder = json.JSONDecoder(strict=False)  # strict=False allows raw line breaks inside strings, which models often emit
+    for candidate in (body, fix_closers(body)):
+        try:
+            # raw_decode takes the FIRST complete object and ignores whatever follows it.
+            data, _ = decoder.raw_decode(candidate)
+        except ValueError:
+            continue
+        return data if isinstance(data, dict) else None
+    return None
 
 
 def _text(value: Any, limit: int = MAX_TEXT_CHARS) -> str:
