@@ -70,7 +70,7 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
 
       {decision && (
         <div role="status" className="rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
-          Recorded as <strong>{decision.human_action}</strong> {when(decision.human_action_at)}. {decision.note}
+          {decision.human_action === "Approved" ? "✅" : "❌"} Recorded as <strong>{decision.human_action}</strong> {when(decision.human_action_at)}. {decision.note}
         </div>
       )}
       {error && <ErrorNote message={error} />}
@@ -80,7 +80,9 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
           {confirming ? (
             <>
               <span className="text-sm text-slate-300">
-                {confirming === "approve" ? "Approve this request? This records your decision; nothing is run or published." : "Reject this request?"}
+                {confirming === "approve"
+                  ? "Are you sure you want to approve this? It records your decision and cannot be changed; nothing is run or published."
+                  : "Are you sure you want to reject this? It records your decision and cannot be changed."}
               </span>
               <button
                 disabled={busy}
@@ -99,11 +101,17 @@ export default function AuthorizationCard({ entry, onDecided }: { entry: AuditEn
             </>
           ) : (
             <>
-              <button onClick={() => setConfirming("approve")} className="rounded-lg border border-emerald-400/50 px-4 py-1.5 text-sm text-emerald-200 hover:bg-emerald-400/10">
-                Approve
+              <button
+                onClick={() => setConfirming("approve")}
+                className="rounded-lg bg-emerald-500 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400"
+              >
+                <span aria-hidden="true">✅ </span>Approve
               </button>
-              <button onClick={() => setConfirming("reject")} className="rounded-lg border border-red-400/50 px-4 py-1.5 text-sm text-red-200 hover:bg-red-400/10">
-                Reject
+              <button
+                onClick={() => setConfirming("reject")}
+                className="rounded-lg bg-red-500 px-5 py-2 text-sm font-semibold text-white transition hover:bg-red-400"
+              >
+                <span aria-hidden="true">❌ </span>Reject
               </button>
             </>
           )}

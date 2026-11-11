@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.cmo_agent import AGENT_ID, get_cmo_result
 from app.api.cao import CAORequest, CAOResponse
+from app.api.cto import PlainSummary
 from app.api.security import require_actor, require_cmo_key
 from app.governance import audit
 
@@ -47,6 +48,7 @@ class CMOAuthorizationRequest(BaseModel):
     """A proposal to publish or change something public, waiting for a human. Built by app/agents/cmo_authorization.py."""
 
     action_summary: str
+    executive_summary: PlainSummary | None = None  # Phase 6.5: plain-language purpose / problem / risk; null on older rows
     risk_level: Literal["low", "medium", "high", "critical"]
     impact: str
     proposed_content: str | None = None  # the exact copy or creative, as text for review; never published by the CMO
@@ -84,7 +86,7 @@ async def cmo(
         if epoch is not None and request.reset_epoch is not None and request.reset_epoch < epoch:
             history_dicts, history_discarded = [], True
 
-        result = await get_cmo_result(request.message, history_dicts, user_id=user_id)
+        result = await get_cmo_result(request.message, history_dicts, user_id=user_id, model_tier=request.model)
         return CMOResponse(
             response=result.reply,
             reply=result.reply,
@@ -98,6 +100,8 @@ async def cmo(
             reset_epoch=epoch,
             history_discarded=history_discarded,
             sources=result.sources,
+            chat_reply=result.chat_reply,
+            model=result.model,
         )
     except Exception as exc:
         # Do not log message content: enterprise queries may be sensitive.

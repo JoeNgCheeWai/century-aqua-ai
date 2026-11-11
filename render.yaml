@@ -42,6 +42,13 @@ services:
         sync: false          # secret; required to enable the internal-only /api/council endpoints (64-char hex, different from the agent keys)
       - key: COUNCIL_MODEL
         value: claude-sonnet-5-5
+      # Phase 6.5 model tiers: what "haiku", "sonnet" and "opus" mean in the Mission Control model picker. Optional (these are the defaults).
+      - key: HAIKU_MODEL
+        value: claude-haiku-5-5
+      - key: SONNET_MODEL
+        value: claude-sonnet-5-5
+      - key: OPUS_MODEL
+        value: claude-opus-5-5
       # Phase 6 Mission Control: ADMIN_PIN and ADMIN_SESSION_SECRET are read by the Next.js FRONTEND (Vercel), not by this
       # backend. They are listed here as the project's record of every secret; set the same two on the frontend host.
       # The backend's Mission Control endpoints (/api/audit-logs, /api/authorization/*, /api/council/sessions) use

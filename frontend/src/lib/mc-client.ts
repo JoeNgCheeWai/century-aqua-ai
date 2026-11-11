@@ -39,7 +39,8 @@ export async function mc<T>(path: string, init: { method?: "GET" | "POST"; body?
   } catch {
     // no JSON body
   }
-  if (response.status === 401) {
+  // Only OUR session check answers {error: "UNAUTHENTICATED"}. Any other 401 is not a reason to sign the user out.
+  if (response.status === 401 && (body as { error?: unknown } | null)?.error === "UNAUTHENTICATED") {
     // A full navigation on purpose: it drops all client state when the session has ended.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign(`/mission-control/login?next=${encodeURIComponent(window.location.pathname)}`);

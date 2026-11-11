@@ -25,7 +25,7 @@ export default function SessionView({ sessionId }: { sessionId: string }) {
   if (!session) {
     return error ? (
       <>
-        <PageTitle title="Council session" />
+        <PageTitle title="Boardroom session" />
         <ErrorNote message={error} />
       </>
     ) : (
@@ -39,7 +39,7 @@ export default function SessionView({ sessionId }: { sessionId: string }) {
   return (
     <>
       <PageTitle
-        title="Council session"
+        title="Boardroom session"
         subtitle={session.query ?? "Session in progress…"}
         actions={
           <Link href="/mission-control/council" className={buttonGhost}>

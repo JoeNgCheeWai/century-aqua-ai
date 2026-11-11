@@ -49,7 +49,7 @@ export default function AuditEntryDetail({ entry }: { entry: AuditEntry }) {
       {entry.authorization_request && (
         <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-4">
           <SectionTitle>Authorization request</SectionTitle>
-          <AuthorizationDetail request={entry.authorization_request} agentId={entry.agent_id} />
+          <AuthorizationDetail request={entry.authorization_request} agentId={entry.agent_id} startOpen />
           <p className="mt-3 text-xs text-slate-400">
             Decision: {entry.human_action}
             {entry.human_action_at ? ` on ${when(entry.human_action_at)}` : ""}

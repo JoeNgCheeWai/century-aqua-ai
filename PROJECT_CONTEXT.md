@@ -899,3 +899,63 @@ Browser-facing route handlers (all under `frontend/src/app/api/mc/`, each checks
 - **The audit-log search is a plain substring match** (`ILIKE`): fine for this volume, not indexed.
 - **The Clerk areas (`/internal`, `/admin`) were only checked to still build.** `proxy.ts` now checks Mission Control paths before them.
 
+
+## 18. Phase 6.5: UX Polish (conversational chat, plain-language authorizations, model tiers, Boardroom)
+
+**Scope.** Makes Mission Control easier for a non-technical CEO to use and cheaper to run. It changes how answers are *presented* and lets the human pick a model tier per question. It does NOT change the Executive Constitution (Clauses 0-15 are untouched), the authorization safety rules (status, executed, risk floors), or the council protocol.
+
+### Bug fixed first: the CTO "Send" redirected to the login page
+`POST /api/mc/agents/cto` adds the CTO key server-side. If the backend refused that key it answered 401, and the Mission Control route passed the 401 straight to the browser, which reads any 401 as "the session ended" and went to the login page. It looked like a logout but was a key mismatch (`INTERNAL_CTO_KEY` on Vercel differing from Render). Fixes: `mc-backend.ts` turns a backend 401 into a 502 `BACKEND_KEY_REJECTED` with a readable message, and `mc-client.ts` only redirects on `{error: "UNAUTHENTICATED"}`, which only our own session check sends. **The underlying key mismatch still has to be fixed on the hosts:** set the same 64-hex `INTERNAL_CTO_KEY` on Render and Vercel and redeploy both. (This cause is inferred from the code and from the local key lengths; it was not confirmed against the live hosts.)
+
+### What was built
+| Brief item | What now exists |
+|---|---|
+| 1b Conversational tone | Each executive adds one JSON field, `chat_reply` (2-4 plain sentences), asked for by `prompts/chat_style.py` (`CHAT_REPLY_PROMPT`, appended AFTER each reasoning prompt, so the JSON example in those prompts and the tests pinning it are unchanged). The chat shows it first. `response` is still the full, scored, audited recommendation. |
+| 1a / 4 Hide reasoning and sources | The reasoning chain, scenarios, sources, score and full recommendation sit behind **Show technical details** in `AgentAnswerView`. If there is no `chat_reply`, the full `response` is shown instead, so nothing the human needs is hidden. |
+| 1c Plain-language authorization | CTO and CMO requests carry an optional `executive_summary` (three parts: `purpose`, `problem`, `risk`; see Section 18.1), asked for by `AUTHORIZATION_SUMMARY_PROMPT`. `AuthorizationDetail` shows it first ("In plain words"); the diff, commands, deployment steps and rollback plan are behind **Show technical details** (the audit log opens them by default). The CMO's proposed content and the claims to verify are NOT hidden: they are what is being approved. |
+| 2a Approve / Reject | The buttons already existed with a confirm step. They are now solid green and red, and the confirm text says the decision is final. No new endpoint. |
+| 2b Model tiers | Optional `model` field (`"haiku" \| "sonnet" \| "opus"`) on `/api/cao`, `/api/coo`, `/api/cto`, `/api/cmo`. `agents/model_tiers.py` maps a tier to a model id from an allow-list (`HAIKU_MODEL`, `SONNET_MODEL`, `OPUS_MODEL`; defaults `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`). A model id is never accepted (422). Left out, each agent keeps its own `*_MODEL`, so existing callers are unchanged. The response reports the `model` used. The chat has a picker (Sonnet default) and shows a one-line suggestion to try Opus when the typed question matches strategic keywords. |
+| 1d Council to Boardroom | Renamed everywhere in the UI. The Boardroom form lets the human choose who sits: Automatic, or "I'll choose" the CTO and CMO. The CAO and COO always sit (the backend adds them). The URLs and API paths are unchanged (`/council`). |
+
+### Safety decisions (in code, not left to the model)
+- `chat_reply` is NOT covered by the constitutional score (the score reads `response`), so a `chat_reply` that says the agent itself approved, executed, sent, published or deployed something is **dropped** in code (`agents/chat_reply.py`, using `scoring.claims_action`) and the UI falls back to the full response. The same check drops an `executive_summary` that claims an action (a finding is recorded; the request itself survives).
+- A friendly summary cannot change a risk level: the risk floors, the forced `pending_human_approval` / `executed: false`, and the "a request needs a diff or commands / content or steps" rule all run exactly as before. A summary alone never makes a request.
+- `scoring._ACTION_CLAIM` was tightened: it missed "I've published" and "I deployed" style phrasing. The 35 governance tests still pass. This also makes the existing score slightly stricter for every agent answer.
+- Older rows without `executive_summary` still validate (the field is optional).
+
+### Config
+`render.yaml` and `backend/.env.example` list `HAIKU_MODEL`, `SONNET_MODEL`, `OPUS_MODEL`. All optional. No database migration (the summary is stored inside the existing `authorizationRequest` JSON).
+
+### Tests
+`backend/tests/test_phase_6_5.py` (38, see Section 18.1): tier mapping and env override, unknown tier refused, each tier reaches the Anthropic call for all four agents, no tier keeps the agent's own model, a model id is a 422 and never reaches the model, the key is checked before the tier, parser (`chat_reply` read, capped, wrong types), action-claim vetting, prompt blocks present and the JSON examples unchanged, summary kept/capped/dropped, safety rules unchanged by the summary, older rows validate, end-to-end through the CTO endpoint. Three existing tests that pinned the exact authorization field set were updated for the new optional field. **Backend suites touching this phase: 403 OK (36 skipped: the database-backed classes, which need a local database).** Frontend: `tsc` and `eslint` exit 0; the 14 `mission_control_auth` tests pass.
+
+### Honest limits (DO NOT OVERSTATE)
+- **Not built: the Boardroom "Private vs Shared" toggle.** The council protocol has no such concept (every participant sees the debate), and adding one would change the protocol and Clause 17. It needs its own design. The agent checkboxes ARE built.
+- **The Boardroom ignores the model picker.** Council calls use `COUNCIL_MODEL` with small token caps; tiers apply to the four solo agents only.
+- **(Superseded by Section 18.1: a live check was done afterwards.) No real model was called when this section was first written.** The conversational tone, the plain-language quality of `executive_summary`, and how well Haiku follows the strict JSON format are all UNVERIFIED. They depend on the model following the prompt. Try several questions on each tier before relying on it. If a model ignores the new fields, the UI falls back to the full response, so the failure mode is "looks like before", not "broken".
+- **The browser UI has not been opened.** Build-time checks (types, lint) are clean; nothing was clicked, and `next build` was not run.
+- **Cost figures are estimates.** `MODEL_TIERS` in `mc-types.ts` assumes about 7,000 input and 3,500 output tokens per answer at the published per-million prices (Opus $4/$20, Sonnet $2/$10, Haiku $0.10/$0.50). The brief's figures were Opus about $0.10, Sonnet about $0.04, Haiku about $0.001; Haiku is closer to $0.003 and Sonnet to $0.05 because the system prompt alone is about 7,500 tokens. Real cost depends on answer length, history and knowledge-base excerpts. Check the Anthropic usage page, and re-check prices when they change.
+- **Thinking tokens count against `max_tokens`.** The agent budgets (8192-16384) were sized on Sonnet. A deep Opus answer could use more of it and be truncated; the existing truncation notice still applies. Not tested live.
+- **The "consider Opus" banner is a keyword check**, not a model judgement. It will miss some strategic questions and flag some that are not. It suggests; it never switches.
+- **Auto-routing by query pattern (brief 2b "Smart Defaults") is NOT built**, on purpose: silently choosing a cheaper model for a high-stakes question is a governance risk. The human picks.
+
+### 18.1 Follow-up fixes after the first look at the UI (four reported issues)
+
+**Why the user still saw the old UI.** Phase 6.5 was not committed, so a deployed site was still running the previous build. A local check found the code did render the picker, the toggle and the short reply. Deploy, then hard-refresh.
+
+**Live check against the real model** (backend through its HTTP app, no database, one run each, a smoke test and not a measurement):
+- **Reasoning hidden (issue 1).** `chat_reply` was returned and survived vetting on all 8 Haiku calls (2 per agent) and on the Sonnet CTO calls. One early CAO Haiku call returned none (the model skipped the optional field), and the screen then showed the full recommendation instead. The prompt now says the field is MANDATORY. The UI hides reasoning, scenarios, sources and the score behind "Show technical details", and shows the full answer only when there is no `chat_reply`.
+- **Model picker (issue 2).** It was already in `AgentChat.tsx`. Haiku really ran (`claude-haiku-5-5`, reported back in the response). No layout change was needed; it sits above the input.
+- **Plain-language summary (issue 3).** The first live summary was one paragraph with a jargon-free sentence but it said nothing the code could check, and it contradicted the badge (it said "the risk is low" while the code-computed level was high). `executive_summary` is now an object with three required parts, `purpose`, `problem`, `risk`, each one sentence of 25 words or fewer, with worked good and bad examples in the prompt (including the exact bad example from the brief). The UI shows them under "What is this for?", "What problem does it solve?" and "What is the risk?". Enforced in `agents/plain_summary.py`, not left to the model: a missing part drops the whole summary; for the CTO, code or file names (backticks, CamelCase, snake_case, file names, paths, braces) drop it; an action claim drops it; and a "low risk" claim next to a higher COMPUTED level is replaced with "The safety checks rate this <level> risk." The model is told not to rate the risk, because the badge is computed by the code and has floors the model cannot lower. Live result: two CTO requests produced three clean sentences each, with no code words.
+- **Memory (issue 4).** The backend agents are stateless; the chat was already sending `history`, but kept it only in component state, so it was lost on a tab switch or refresh. It is now kept in sessionStorage per agent (this browser tab), with the reset epoch, a "New conversation" button, a cap of 40 stored turns and 20 sent messages. Live: after "I run a 40 hectare shrimp farm in Vietnam", the follow-up "What size farm did I just tell you I have, and which country?" was answered correctly from the history on two runs. `AgentState` was deliberately NOT used: it is one shared row per agent and is never fed back to the model, so using it would leak one person's conversation into another's. The Boardroom has no conversation memory of its own (each session is a clean backend job, by design), so a follow-up now carries the earlier discussions inside the question text (newest kept, 4,000-character limit, the new question never cut). Not tested live.
+
+**Tests.** `test_phase_6_5.py` now has 38 tests (the summary rules, the exact good and bad examples from the brief, the risk contradiction, brand names allowed for the CMO). New `frontend/scripts/mission_control_memory.test.mjs` has 11 (`node --test`). Backend run touching this phase: 551 OK (36 skipped, database-backed). Frontend: `tsc` and `eslint` exit 0, 25 node tests pass, `next build` succeeds.
+
+**Still NOT verified (DO NOT OVERSTATE):**
+- **The browser.** Nothing was opened or clicked. Rendering, the picker's look, the toggle and sessionStorage behaviour in a real tab are unchecked.
+- **Boardroom memory** has no live test, and a follow-up costs more because the context rides in the query.
+- **The summary check is a pattern check.** It will not catch jargon made of ordinary words, and it cannot tell whether the three sentences are TRUE.
+- **Memory is per browser tab.** Opening a new tab, or clearing site data, starts a new conversation. It is not shared between devices.
+- **Sample sizes are tiny** (one run per case), so "mostly writes chat_reply" is an observation, not a rate.
+
+- **The longer system prompt costs a little more per call** (about 500 tokens for the chat-reply block, about 250 more for the summary block on the CTO and CMO).

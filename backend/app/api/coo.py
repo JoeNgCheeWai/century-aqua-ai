@@ -55,7 +55,7 @@ async def coo(
         if epoch is not None and request.reset_epoch is not None and request.reset_epoch < epoch:
             history_dicts, history_discarded = [], True
 
-        result = await get_coo_result(request.message, history_dicts, user_id=user_id)
+        result = await get_coo_result(request.message, history_dicts, user_id=user_id, model_tier=request.model)
         return COOResponse(
             response=result.reply,
             reply=result.reply,
@@ -68,6 +68,8 @@ async def coo(
             reset_epoch=epoch,
             history_discarded=history_discarded,
             sources=result.sources,
+            chat_reply=result.chat_reply,
+            model=result.model,
         )
     except Exception as exc:
         # Do not log message content: enterprise queries may be sensitive.

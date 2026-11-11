@@ -11,9 +11,18 @@ export interface Paged<T> {
   offset: number;
 }
 
+/** What is it for, what problem does it solve, what could go wrong. The risk RATING is the badge, computed by the backend. */
+export interface PlainSummary {
+  purpose: string;
+  problem: string;
+  risk: string;
+}
+
 /** The CTO's request has proposed_code_diff / proposed_commands; the CMO's has proposed_content / deployment_commands. */
 export interface AuthorizationRequest {
   action_summary: string;
+  /** Three plain-language answers for a non-technical decision-maker (Phase 6.5). Missing on older rows. */
+  executive_summary?: PlainSummary | null;
   risk_level: "low" | "medium" | "high" | "critical";
   impact: string;
   proposed_code_diff?: string | null;
@@ -63,6 +72,10 @@ export interface AuditEntry {
 /** What POST /api/{cao|coo|cto|cmo} returns. */
 export interface AgentAnswer {
   response: string;
+  /** The short conversational answer shown first (Phase 6.5). Null when the model gave none or it was vetted out. */
+  chat_reply?: string | null;
+  /** The id of the model that wrote this answer. */
+  model?: string | null;
   reasoning_chain: string[];
   scenarios: Scenarios | null;
   authorization_request?: AuthorizationRequest | null;
@@ -163,6 +176,21 @@ export interface Overview {
   recent_sessions: Paged<CouncilSummary> | null;
   errors: { audit: number | null | undefined; authorizations: number | null; sessions: number | null };
 }
+
+/**
+ * Model tiers an executive can be asked with (Phase 6.5). The costs are ROUGH ESTIMATES for one typical executive answer:
+ * about 7,000 input tokens (the agent's system prompt alone is about 7,500) and about 3,500 output tokens (an assumption,
+ * which includes any thinking tokens), at the published per-million-token prices: Opus $4 in / $20 out, Sonnet $2 / $10,
+ * Haiku $0.10 / $0.50. A long answer, a long conversation or a large knowledge-base excerpt costs more. Re-check these
+ * against the pricing page when prices change; the real cost is on the Anthropic usage page, not here.
+ */
+export type ModelTier = "haiku" | "sonnet" | "opus";
+export const MODEL_TIERS: { id: ModelTier; label: string; icon: string; hint: string; cost: string }[] = [
+  { id: "opus", label: "Opus", icon: "🧠", hint: "High-stakes, strategic analysis", cost: "~$0.10" },
+  { id: "sonnet", label: "Sonnet", icon: "⚡", hint: "Everyday work, balanced", cost: "~$0.05" },
+  { id: "haiku", label: "Haiku", icon: "🚀", hint: "Quick replies, simple questions", cost: "~$0.003" },
+];
+export const DEFAULT_TIER: ModelTier = "sonnet";
 
 export const AGENT_INFO: Record<AgentKey, { name: string; role: string }> = {
   cao: { name: "AI_CAO", role: "Chief Aquaculture Officer" },

@@ -27,7 +27,7 @@ export default function DashboardView() {
           <div className="flex items-center gap-3">
             {loading && <Spinner label="Refreshing" />}
             <Link href="/mission-control/council" className={buttonGhost}>
-              New council session
+              New Boardroom session
             </Link>
           </div>
         }
@@ -86,15 +86,15 @@ export default function DashboardView() {
 
         <Card className="lg:col-span-2">
           <div className="mb-2 flex items-center justify-between">
-            <SectionTitle>Recent council sessions</SectionTitle>
+            <SectionTitle>Recent Boardroom sessions</SectionTitle>
             <Link href="/mission-control/council" className="text-xs text-cyan-300 hover:underline">
               All sessions →
             </Link>
           </div>
           {data?.errors.sessions ? (
-            <ErrorNote message={`Council sessions could not be loaded (${data.errors.sessions}).`} />
+            <ErrorNote message={`Boardroom sessions could not be loaded (${data.errors.sessions}).`} />
           ) : data?.recent_sessions && data.recent_sessions.items.length === 0 ? (
-            <Empty>No council sessions yet.</Empty>
+            <Empty>No Boardroom sessions yet.</Empty>
           ) : (
             <ul className="divide-y divide-slate-800">
               {(data?.recent_sessions?.items ?? []).map((s) => (

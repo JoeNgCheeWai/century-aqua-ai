@@ -42,10 +42,19 @@ router = APIRouter()
 CTORequest = CAORequest
 
 
+class PlainSummary(BaseModel):
+    """Three short plain-language answers for a non-technical decision-maker. Built by app/agents/plain_summary.py."""
+
+    purpose: str  # what this task is for
+    problem: str  # what problem it solves
+    risk: str  # what could go wrong and what protects us (never a rating: the risk level is computed in code)
+
+
 class AuthorizationRequest(BaseModel):
     """A proposed change that waits for a human. Built by app/agents/cto_authorization.py."""
 
     action_summary: str
+    executive_summary: PlainSummary | None = None  # Phase 6.5: plain-language purpose / problem / risk; null on older rows
     risk_level: Literal["low", "medium", "high", "critical"]
     impact: str
     proposed_code_diff: str | None = None  # text for review, never applied by the CTO
@@ -82,7 +91,7 @@ async def cto(
         if epoch is not None and request.reset_epoch is not None and request.reset_epoch < epoch:
             history_dicts, history_discarded = [], True
 
-        result = await get_cto_result(request.message, history_dicts, user_id=user_id)
+        result = await get_cto_result(request.message, history_dicts, user_id=user_id, model_tier=request.model)
         return CTOResponse(
             response=result.reply,
             reply=result.reply,
@@ -96,6 +105,8 @@ async def cto(
             reset_epoch=epoch,
             history_discarded=history_discarded,
             sources=result.sources,
+            chat_reply=result.chat_reply,
+            model=result.model,
         )
     except Exception as exc:
         # Do not log message content: enterprise queries may be sensitive.

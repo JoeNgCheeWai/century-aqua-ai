@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import SessionView from "./SessionView";
 
-export const metadata = { title: "Council session | Mission Control" };
+export const metadata = { title: "Boardroom session | Mission Control" };
 
 // The id is only known at request time (Cache Components), so it is read behind Suspense.
 async function Session({ params }: { params: Promise<{ sessionId: string }> }) {

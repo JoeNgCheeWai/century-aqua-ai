@@ -54,8 +54,8 @@ PUBLISH_QUERY = "Post the LinkedIn announcement for the RAS feasibility tool tom
 SHARED_FIELDS = {"response", "reasoning_chain", "scenarios", "pre_consultation_requests"}
 NULL_PRE = {"coo_query": None, "cto_query": None}
 AUTH_FIELDS = {
-    "action_summary", "risk_level", "impact", "proposed_content", "deployment_commands", "rollback_plan",
-    "claims_to_verify", "status", "requires_human_approval", "executed",
+    "action_summary", "executive_summary", "risk_level", "impact", "proposed_content", "deployment_commands",
+    "rollback_plan", "claims_to_verify", "status", "requires_human_approval", "executed",
 }
 
 PILLARS = (

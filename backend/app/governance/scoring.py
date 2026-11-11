@@ -30,10 +30,15 @@ _CONFIDENCE = re.compile(r"(?i)\bconfidence\b[^.\n]{0,40}?(\d{1,3})\s*%|(\d{1,3}
 _REASONING = re.compile(r"(?i)\b(reasoning|rationale|because|therefore|based on|evidence|assumption)\b")
 _SOURCES = re.compile(r"(?i)\[\d+\]|\bsource[s]?\b|\bgeneral knowledge\b|\bcross-agent\b|\bRAG\b|\bretrieved\b")
 _ACTION_CLAIM = re.compile(
-    r"(?i)\bI (?:have |'ve )?(?:approved|authorized|authorised|executed|transferred|paid|signed|"
+    r"(?i)\bI(?:\s+have\s+|'ve\s+|\s+)(?:approved|authorized|authorised|executed|transferred|paid|signed|"
     r"submitted|sent|ordered|purchased|booked|deployed|published|filed|completed the (?:payment|transfer))\b"
 )
 _ESCALATION = re.compile(r"(?m)^\W*ESCALATE TO HUMAN\s*:")
+
+
+def claims_action(text: str) -> bool:
+    """True if the text says the writer itself approved, executed, sent, published, deployed... something (Clause 0)."""
+    return bool(_ACTION_CLAIM.search(text or ""))
 
 
 @dataclass

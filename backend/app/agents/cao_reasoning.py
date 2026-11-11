@@ -39,6 +39,8 @@ MAX_ITEM_CHARS = 500  # one reasoning step, timeline, assumption or risk
 MAX_LIST_ITEMS = 10  # assumptions or risks per scenario
 MAX_CHAIN_ENTRIES = 12  # reasoning_chain length (3-5 steps + data/assumptions/limitations)
 MAX_QUERY_CHARS = 1000  # a future COO/CTO question
+MAX_CHAT_REPLY_CHARS = 1200  # the 2-4 sentence conversational answer (Phase 6.5)
+
 
 # Phase 1: no COO or CTO exists, so nothing may be requested from them. The Council Protocol
 # phase sets this to True; until then both queries are forced to None whatever the model says.
@@ -57,6 +59,7 @@ class ParsedAnswer:
     pre_consultation_requests: dict[str, str | None] = field(default_factory=empty_pre_consultation)
     structured: bool = False  # True only when the model's JSON was understood
     findings: list[str] = field(default_factory=list)
+    chat_reply: str | None = None  # the short conversational answer (Phase 6.5); None if the model did not give one
 
 
 _FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
@@ -210,6 +213,8 @@ def parse_cao_output(raw: str) -> ParsedAnswer:
         scenarios=scenarios,
         pre_consultation_requests=normalize_pre_consultation(data.get("pre_consultation_requests")),
         structured=True,
+        # Optional and never a format problem when absent: older prompts and cross-validation verdicts have none.
+        chat_reply=_text(data.get("chat_reply"), MAX_CHAT_REPLY_CHARS) or None,
         findings=findings,
     )
 

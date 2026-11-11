@@ -30,9 +30,12 @@ from anthropic import AsyncAnthropic
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
+from app.agents.chat_reply import vetted_chat_reply
 from app.agents.cmo_authorization import audit_summary, normalize_authorization_request
+from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
+from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT
 from app.prompts.cmo_prompt import CMO_REASONING_PROMPT, CMO_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -40,7 +43,7 @@ logger = logging.getLogger(__name__)
 AGENT_ID = "cmo"
 
 # The CMO's role prompt (four pillars, claims discipline, authorization workflow) plus the structured output format.
-CMO_ROLE_PROMPT = CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT
+CMO_ROLE_PROMPT = CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
 
 # The constitution comes FIRST, then the CMO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(CMO_ROLE_PROMPT)
@@ -128,6 +131,9 @@ class CMOResult:
     # The Authorization Workflow: a validated proposal awaiting a human, or None when nothing would be published.
     authorization_request: dict | None = None
     format_findings: list[str] = field(default_factory=list)
+    # Phase 6.5: the short conversational answer (vetted in code, None if absent or unusable) and the model that wrote it.
+    chat_reply: str | None = None
+    model: str | None = None
 
 
 def _source_labels(sources: list) -> list[str]:
@@ -147,6 +153,7 @@ async def get_cmo_result(
     use_rag: bool = True,
     audit: bool = True,
     user_id: str = "unknown",
+    model_tier: str | None = None,
 ) -> CMOResult:
     """
     Generate an AI_CMO response and record it for accountability.
@@ -184,8 +191,10 @@ async def get_cmo_result(
 
     system, sources = await _build_system_prompt(query, use_rag)
 
+    # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
+    model_id = resolve_model(model_tier, CMO_MODEL)
     response = await _get_client().messages.create(
-        model=CMO_MODEL,
+        model=model_id,
         max_tokens=CMO_MAX_TOKENS,
         system=system,
         messages=messages,
@@ -261,6 +270,8 @@ async def get_cmo_result(
         pre_consultation_requests=parsed.pre_consultation_requests,
         authorization_request=authorization_request,
         format_findings=format_findings,
+        chat_reply=vetted_chat_reply(parsed.chat_reply),
+        model=model_id,
     )
 
 

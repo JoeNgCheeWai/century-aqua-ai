@@ -38,6 +38,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.agents.plain_summary import normalize_plain_summary
+
 RISK_LEVELS = ("low", "medium", "high", "critical")
 STATUS_PENDING = "pending_human_approval"
 
@@ -161,8 +163,14 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
         impact = "Not stated by the CTO. Treat the impact as unknown and review before approving."
         findings.append("authorization_request had no impact; placeholder added")
 
+    # Phase 6.5: the plain-language summary a non-technical human decides on (purpose, problem, risk). Optional. It is
+    # checked against the COMPUTED risk level, so it can never say "low risk" next to a high-risk badge (plain_summary.py).
+    executive_summary, summary_findings = normalize_plain_summary(raw.get("executive_summary"), risk_level=level, allow_identifiers=False)
+    findings.extend(summary_findings)
+
     request = {
         "action_summary": summary,
+        "executive_summary": executive_summary,
         "risk_level": level,
         "impact": impact,
         "proposed_code_diff": diff,

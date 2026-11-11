@@ -13,16 +13,19 @@ from anthropic import AsyncAnthropic
 
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_reasoning import parse_cao_output
+from app.agents.chat_reply import vetted_chat_reply
+from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.cao_prompt import CAO_REASONING_PROMPT, CAO_SYSTEM_PROMPT
+from app.prompts.chat_style import CHAT_REPLY_PROMPT
 
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "cao"
 
 # The CAO's role prompt plus the Phase 1 reasoning and prediction format (cao_prompt.py).
-CAO_ROLE_PROMPT = CAO_SYSTEM_PROMPT + "\n\n" + CAO_REASONING_PROMPT
+CAO_ROLE_PROMPT = CAO_SYSTEM_PROMPT + "\n\n" + CAO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
 
 # The constitution comes FIRST, then the CAO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(CAO_ROLE_PROMPT)
@@ -119,6 +122,9 @@ class CAOResult:
     pre_consultation_requests: dict = field(default_factory=lambda: {"coo_query": None, "cto_query": None})
     # Problems with the model's output FORMAT (not content), for example scenarios dropped as incomplete.
     format_findings: list[str] = field(default_factory=list)
+    # Phase 6.5: the short conversational answer (vetted in code, None if absent or unusable) and the model that wrote it.
+    chat_reply: str | None = None
+    model: str | None = None
 
 
 def _source_labels(sources: list) -> list[str]:
@@ -137,6 +143,7 @@ async def get_cao_result(
     use_rag: bool = True,
     audit: bool = True,
     user_id: str = "unknown",
+    model_tier: str | None = None,
 ) -> CAOResult:
     """
     Generate a strategic AI_CAO response and record it for accountability.
@@ -169,8 +176,10 @@ async def get_cao_result(
 
     system, sources = await _build_system_prompt(query, use_rag)
 
+    # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
+    model_id = resolve_model(model_tier, CAO_MODEL)
     response = await _get_client().messages.create(
-        model=CAO_MODEL,
+        model=model_id,
         max_tokens=CAO_MAX_TOKENS,
         system=system,
         messages=messages,
@@ -226,6 +235,8 @@ async def get_cao_result(
         scenarios=parsed.scenarios,
         pre_consultation_requests=parsed.pre_consultation_requests,
         format_findings=parsed.findings,
+        chat_reply=vetted_chat_reply(parsed.chat_reply),
+        model=model_id,
     )
 
 

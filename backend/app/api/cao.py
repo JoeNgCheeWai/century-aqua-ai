@@ -22,6 +22,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.cao_agent import get_cao_result
+from app.agents.model_tiers import ModelTier
 from app.api.security import require_actor, require_internal_key
 from app.governance import audit
 
@@ -39,6 +40,9 @@ class CAORequest(BaseModel):
     # The reset epoch the caller last saw (returned as `resetEpoch`). If the kill switch
     # was used since, the epoch is stale and the history the caller holds is ignored.
     reset_epoch: int | None = Field(default=None, ge=0)
+    # Phase 6.5: which model TIER answers. Optional: left out, the agent uses its own configured model (as before).
+    # A tier, never a model id: app/agents/model_tiers.py maps it from an allow-list, so a caller cannot pick any model.
+    model: ModelTier | None = None
 
 
 class CAOScenario(BaseModel):
@@ -78,6 +82,10 @@ class CAOResponse(BaseModel):
     reset_epoch: int | None = None
     history_discarded: bool = False
     sources: list[str] = Field(default_factory=list)
+    # Phase 6.5: the short conversational answer the chat shows first (null if the model gave none, or it was vetted
+    # out), and the id of the model that wrote this answer.
+    chat_reply: str | None = None
+    model: str | None = None
 
 
 @router.post("/api/cao", response_model=CAOResponse)
@@ -101,7 +109,7 @@ async def cao(
         if epoch is not None and request.reset_epoch is not None and request.reset_epoch < epoch:
             history_dicts, history_discarded = [], True
 
-        result = await get_cao_result(request.message, history_dicts, user_id=user_id)
+        result = await get_cao_result(request.message, history_dicts, user_id=user_id, model_tier=request.model)
         return CAOResponse(
             response=result.reply,
             reply=result.reply,
@@ -114,6 +122,8 @@ async def cao(
             reset_epoch=epoch,
             history_discarded=history_discarded,
             sources=result.sources,
+            chat_reply=result.chat_reply,
+            model=result.model,
         )
     except Exception as exc:
         # Do not log message content: enterprise queries may be sensitive.

@@ -67,6 +67,19 @@ export async function callBackend(
     } catch {
       body = { error: "BAD_RESPONSE" };
     }
+    // A 401 from the BACKEND means the key this server sent was refused (the key set here differs from the one on the
+    // backend). It must never reach the browser as a 401: the browser reads 401 as "the Mission Control session ended"
+    // and sends the user to the login page. Report it as a bad gateway with a readable cause instead.
+    if (response.status === 401) {
+      console.error(`mission-control: backend refused the key for ${path} (check that the key env var matches the backend's)`);
+      return {
+        status: 502,
+        body: {
+          error: "BACKEND_KEY_REJECTED",
+          detail: "The backend refused the key this server sent. The key set on the web host does not match the key on the backend.",
+        },
+      };
+    }
     return { status: response.status, body };
   } catch (error) {
     const name = (error as Error).name;

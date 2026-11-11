@@ -49,6 +49,7 @@ import re
 from typing import Any
 
 from app.agents.cto_authorization import RISK_LEVELS, STATUS_PENDING
+from app.agents.plain_summary import normalize_plain_summary
 
 MAX_SUMMARY_CHARS = 600
 MAX_IMPACT_CHARS = 2000
@@ -212,8 +213,14 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
         claims = (claims + [f"[detected by the system, substantiate before publishing] {c}" for c in detected])[:MAX_CLAIMS]
         findings.append(f"{len(detected)} factual claim(s) detected in the draft and added to claims_to_verify")
 
+    # Phase 6.5: the plain-language summary a non-specialist decides on (purpose, problem, risk). Optional. Brand names
+    # such as LinkedIn are fine here, so the code-name check is off (plain_summary.py); the risk check is on.
+    executive_summary, summary_findings = normalize_plain_summary(raw.get("executive_summary"), risk_level=level, allow_identifiers=True)
+    findings.extend(summary_findings)
+
     request = {
         "action_summary": summary,
+        "executive_summary": executive_summary,
         "risk_level": level,
         "impact": impact,
         "proposed_content": content,

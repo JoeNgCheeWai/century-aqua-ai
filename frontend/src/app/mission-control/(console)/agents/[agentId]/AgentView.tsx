@@ -20,7 +20,7 @@ function Tabs({ target }: { target: Target }) {
             key === target ? "border-cyan-400/60 bg-cyan-400/15 text-cyan-100" : "border-slate-700 text-slate-400 hover:border-cyan-400/30 hover:text-white"
           }`}
         >
-          {key === "council" ? "Council" : AGENT_INFO[key].name}
+          {key === "council" ? "Boardroom" : AGENT_INFO[key].name}
         </Link>
       ))}
     </nav>
@@ -31,8 +31,8 @@ export default function AgentView({ target }: { target: Target }) {
   return (
     <>
       <PageTitle
-        title={target === "council" ? "Council" : AGENT_INFO[target].name}
-        subtitle={target === "council" ? "Convene the executive council on a decision." : AGENT_INFO[target].role}
+        title={target === "council" ? "Boardroom" : AGENT_INFO[target].name}
+        subtitle={target === "council" ? "Convene the executive Boardroom on a decision." : AGENT_INFO[target].role}
       />
       <Tabs target={target} />
       {/* key: switching agent starts a fresh conversation */}

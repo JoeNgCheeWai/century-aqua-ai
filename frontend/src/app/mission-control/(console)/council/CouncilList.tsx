@@ -20,11 +20,11 @@ export default function CouncilList() {
   return (
     <>
       <PageTitle
-        title="Council sessions"
-        subtitle="Every session the executive council has held."
+        title="Boardroom sessions"
+        subtitle="Every session the executive Boardroom has held."
         actions={
           <Link href="/mission-control/agents/council" className={buttonPrimary}>
-            Convene the council
+            Convene the Boardroom
           </Link>
         }
       />
