@@ -41,6 +41,32 @@ class CtoPromptTests(unittest.TestCase):
         for needle in (".env", ".github", "secret", "main"):
             self.assertIn(needle, text)
 
+    def test_the_cto_must_output_the_json_plan_inside_authorization_request_and_not_describe_it_in_text(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        self.assertIn("RULE 1", text)
+        self.assertIn("MUST output a valid, parseable JSON object named \"execution_plan\"", text)
+        self.assertIn("inside \"authorization_request\"", text)
+        self.assertIn("exactly these keys", text)
+        self.assertIn("starting with agent/", text)
+        self.assertIn("Do not just describe the plan in text", text)
+        # The key the validator really reads. "files_to_create" would be dropped as "files_to_update is empty".
+        self.assertIn("files_to_update", text)
+        self.assertNotIn("files_to_create", text)
+
+    def test_the_cto_must_assume_and_not_defer_to_the_human_on_open_design_questions(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        self.assertIn("RULE 2", text)
+        self.assertIn("DO NOT defer the code generation to the human", text)
+        self.assertIn("reasonable, standard industry assumptions", text)
+        self.assertIn("generate the execution_plan anyway", text)
+        self.assertIn("draft the code for review", text)
+        self.assertIn("override every earlier instruction", text)
+        # The safety limits still stand.
+        self.assertIn("never overwrite an existing file you were not shown", text)
+
+    def test_the_cto_is_no_longer_told_to_ask_for_a_file_and_leave_the_plan_null(self):
+        self.assertNotIn('ask for the file text and leave "execution_plan" null', chat_style.CTO_EXECUTION_PLAN_PROMPT)
+
     def test_the_other_executives_are_not_given_the_plan_or_ui_instructions(self):
         for module in (cao_agent, coo_agent):
             self.assertNotIn("execution_plan", module.BASE_SYSTEM_PROMPT, module.__name__)
