@@ -64,6 +64,11 @@ def image_model() -> str:
     return os.getenv("OPENAI_IMAGE_MODEL", "").strip() or DEFAULT_IMAGE_MODEL
 
 
+def readiness() -> dict[str, bool]:
+    """Whether the two keys the tool needs are set. Booleans only: a value is never returned, so this is safe to log."""
+    return {"openai_key": bool(os.getenv("OPENAI_API_KEY", "").strip()), "blob_token": bool(os.getenv(BLOB_TOKEN_ENV, "").strip())}
+
+
 def is_blob_url(value: Any) -> bool:
     """True for a plain https address on Vercel Blob's host (no credentials, no odd port, no spaces)."""
     if not isinstance(value, str) or " " in value or len(value) > 300:

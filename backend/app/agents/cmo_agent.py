@@ -125,6 +125,17 @@ MAX_IMAGES_PER_ANSWER = 2  # each image costs money and the console gives one an
 MAX_TOOL_ROUNDS = 3  # a hard stop on the model-calls-tool loop, whatever the model asks for
 
 
+def log_tools_available(tools: list[dict]) -> None:
+    """
+    One line at the start of every CMO answer: the tools about to be offered to the model, so Render's logs show whether the
+    deployed code offers any. It is a print, not logger.info: under uvicorn the root logger has no handler and sits at WARNING,
+    so an info line is dropped (the same reason the endpoints report errors with print). Whether each key is set is shown as
+    true or false, never the value.
+    """
+    ready = image_tool.readiness()
+    print(f"CMO tools available: {[t['name'] for t in tools]} (openai_key set: {ready['openai_key']}, blob_token set: {ready['blob_token']})", flush=True)
+
+
 async def _create_with_image_tool(client, *, model: str, system: str, messages: list[dict]):
     """
     ONE answer, with the image tool on offer. Returns (the final response, the set of Vercel Blob addresses the tool returned).
@@ -134,6 +145,7 @@ async def _create_with_image_tool(client, *, model: str, system: str, messages: 
     is still asking. The tool blocks (vendor HTTP calls), so it runs in a worker thread. It never raises.
     """
     common = {"model": model, "max_tokens": CMO_MAX_TOKENS, "system": system, "tools": [image_tool.IMAGE_TOOL_SPEC]}
+    log_tools_available(common["tools"])  # logs exactly what is sent below, so the line cannot say more than the request does
     convo = list(messages)
     produced: set[str] = set()
     made = 0
@@ -255,6 +267,7 @@ async def get_cmo_result(
     if images:
         response, produced_images = await _create_with_image_tool(_get_client(), model=model_id, system=system, messages=messages)
     else:  # a review of another executive's recommendation: no tools, exactly as before
+        log_tools_available([])
         response = await _get_client().messages.create(
             model=model_id,
             max_tokens=CMO_MAX_TOKENS,
