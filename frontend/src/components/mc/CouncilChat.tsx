@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import BoardroomPrivacyPanel from "@/components/mc/BoardroomPrivacyPanel";
 import CouncilOptions from "@/components/mc/CouncilOptions";
 import { Badge, Card, ErrorNote, Spinner, StatusBadge, buttonPrimary, inputClass } from "@/components/mc/ui";
 import { McError, mc, useCouncilPoll } from "@/lib/mc-client";
@@ -137,6 +138,8 @@ export default function CouncilChat() {
           className={inputClass}
           aria-label="Question for the Boardroom"
         />
+
+        <BoardroomPrivacyPanel />
 
         <fieldset className="space-y-2 rounded-lg border border-slate-700/60 p-3">
           <legend className="px-1 text-xs uppercase tracking-[0.18em] text-cyan-300/80">Who sits at the table</legend>
