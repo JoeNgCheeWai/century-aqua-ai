@@ -51,7 +51,10 @@ class CtoPromptTests(unittest.TestCase):
         self.assertIn("Do not just describe the plan in text", text)
         # The key the validator really reads. "files_to_create" would be dropped as "files_to_update is empty".
         self.assertIn("files_to_update", text)
-        self.assertNotIn("files_to_create", text)
+        # "files_to_create" may appear only in the prohibition ("... (not files_to_create)"), never as a key the model is shown.
+        self.assertNotIn('"files_to_create"', text)
+        self.assertEqual(text.count("files_to_create"), 1)
+        self.assertIn("(not files_to_create)", text)
 
     def test_the_cto_must_assume_and_not_defer_to_the_human_on_open_design_questions(self):
         text = chat_style.CTO_EXECUTION_PLAN_PROMPT
@@ -66,6 +69,47 @@ class CtoPromptTests(unittest.TestCase):
 
     def test_the_cto_is_no_longer_told_to_ask_for_a_file_and_leave_the_plan_null(self):
         self.assertNotIn('ask for the file text and leave "execution_plan" null', chat_style.CTO_EXECUTION_PLAN_PROMPT)
+
+    def test_the_cto_gets_the_critical_execution_rule_and_the_template_inside_its_prompt(self):
+        text = chat_style.CTO_EXECUTION_TEMPLATE
+        for needle in (
+            "CRITICAL EXECUTION RULE",
+            "MUST output a valid JSON object named execution_plan inside your authorization_request",
+            "Do not just describe the plan in text",
+            "You must fill out this exact schema",
+            "You MUST provide the full file content in the content string",
+            "You MUST use the files_to_update key (not files_to_create)",
+            "state those assumptions in the pr_body, and generate the JSON anyway. Do not defer to the human",
+        ):
+            self.assertIn(needle, text)
+        self.assertIn(text.strip(), chat_style.CTO_EXECUTION_PLAN_PROMPT)
+        self.assertIn(text.strip(), cto_agent.BASE_SYSTEM_PROMPT)
+
+    @staticmethod
+    def _template_json() -> dict:
+        text = chat_style.CTO_EXECUTION_TEMPLATE
+        start = text.index("{\n  \"authorization_request\"")
+        end = text.index("\n}\n", start) + 2
+        return json.loads(text[start:end])  # must be valid JSON as the model sees it (the \n and \" are escapes)
+
+    def test_the_template_is_valid_json_and_its_plan_has_exactly_the_four_keys(self):
+        request = self._template_json()["authorization_request"]
+        plan = request["execution_plan"]
+        self.assertEqual(set(plan), {"branch_name", "files_to_update", "pr_title", "pr_body"})
+        self.assertTrue(plan["branch_name"].startswith("agent/"))
+        self.assertNotIn("files_to_create", plan)
+        self.assertIn("\n", plan["files_to_update"][0]["content"])  # the file text is complete and multi-line
+
+    def test_the_template_is_accepted_by_the_real_backend_validators(self):
+        from app.agents import cto_authorization
+
+        request = self._template_json()["authorization_request"]
+        normalised, findings = cto_authorization.normalize_authorization_request(request)
+        self.assertIsNotNone(normalised, findings)
+        self.assertIsNotNone(normalised["execution_plan"], findings)
+        self.assertEqual(normalised["execution_plan"]["files_to_update"][0]["path"], "frontend/src/components/mc/PrivacyToggle.tsx")
+        self.assertIsNotNone(normalised["executive_summary"], findings)  # an object of three parts, not dropped
+        self.assertEqual(findings, [])
 
     def test_the_other_executives_are_not_given_the_plan_or_ui_instructions(self):
         for module in (cao_agent, coo_agent):
