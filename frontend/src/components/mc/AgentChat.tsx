@@ -123,7 +123,7 @@ export default function AgentChat({ agent }: { agent: AgentKey }) {
               {agent === "cto" || agent === "cmo"
                 ? " A request to change something returns an authorization request that waits for a human."
                 : " Every answer is recorded in the audit log."}{" "}
-              You get a short answer first; use “Show technical details” for the full reasoning.
+              You get a short answer first; use “Show internal reasoning &amp; sources” for the full reasoning.
             </p>
           </Card>
         )}

@@ -1,22 +1,32 @@
-"use client";
-
-import { useState } from "react";
 import AuthorizationDetail from "@/components/mc/AuthorizationDetail";
+import MockupGallery from "@/components/mc/MockupGallery";
 import ScenarioGrid from "@/components/mc/ScenarioGrid";
 import { Badge, Card, List, SectionTitle } from "@/components/mc/ui";
+import { splitResponse } from "@/lib/mc-answer";
 import type { AgentAnswer } from "@/lib/mc-types";
 
 /**
- * An agent's answer, conversational first (Phase 6.5). The short chat reply is what you read; the full recommendation,
- * the reasoning chain, the scenarios and the sources sit behind "Show technical details". If the answer has no chat
- * reply (the model gave none, or it was vetted out in code), the full recommendation is shown instead, so nothing is
- * ever hidden that the human needs. An authorization request is always visible: it is waiting for a decision.
+ * An agent's answer, kept clean. What a reader sees by default, top to bottom:
+ *   1. the answer itself: the short conversational reply (or, when the model gave none, the full recommendation);
+ *   2. any AI-generated mockup images;
+ *   3. an authorization request, if one is waiting for a decision (always visible: it needs the human).
+ * Everything else sits behind ONE native <details> toggle, "Show internal reasoning & sources", closed by default: the full
+ * recommendation (when a short reply is shown above), the reasoning chain, the scenarios, the sources the model cited, the
+ * knowledge-base documents that were retrieved, and the audit facts (score, audit id, model).
+ *
+ * The backend appends two notes to the reply text itself (the documents list and a plain-text copy of the authorization
+ * request). They are separated out by lib/mc-answer.ts so the default view is not cluttered by them. Nothing is deleted: the
+ * documents are listed inside the toggle, and the authorization card already shows the request. If a note does not match its
+ * known shape the text is shown whole, never cut.
  */
 export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer; agent: string }) {
-  const [open, setOpen] = useState(false);
-  const hasChat = !!answer.chat_reply;
-  const hasDetails = answer.reasoning_chain.length > 0 || !!answer.scenarios || answer.sources.length > 0 || hasChat;
-  const detailsId = `details-${answer.audit_id ?? "x"}-${agent}`;
+  const request = answer.authorization_request ?? null;
+  const mockups = request?.mockup_urls ?? [];
+  const { body, documents } = splitResponse(answer.response, !!request);
+  const chat = answer.chat_reply?.trim() || null;
+  const reasoning = answer.reasoning_chain ?? [];
+  const sources = answer.sources ?? [];
+  const hasInternals = reasoning.length > 0 || !!answer.scenarios || sources.length > 0 || documents.length > 0 || !!chat;
 
   return (
     <Card className="space-y-4">
@@ -26,71 +36,75 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
         {answer.audit_id == null && <Badge tone="amber">not recorded in the audit log</Badge>}
       </div>
 
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{hasChat ? answer.chat_reply : answer.response}</p>
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{chat ?? body}</p>
 
-      {answer.authorization_request && (
+      {mockups.length > 0 && <MockupGallery urls={mockups} large />}
+
+      {request && (
         <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-4">
           <SectionTitle>Waiting for your decision</SectionTitle>
-          <AuthorizationDetail request={answer.authorization_request} agentId={agent} />
+          <AuthorizationDetail request={request} agentId={agent} showMockups={false} />
           <p className="mt-3 text-xs text-slate-400">Approve or reject it under Authorizations (audit #{answer.audit_id ?? "?"}).</p>
         </div>
       )}
 
-      {hasDetails && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            aria-controls={detailsId}
-            className="text-xs text-cyan-300 hover:underline"
-          >
-            {open ? "Hide technical details" : "Show technical details"}
-          </button>
-          {open && (
-            <div id={detailsId} className="mt-3 space-y-4 border-t border-slate-800 pt-4">
-              <div className="flex flex-wrap items-center gap-2">
-                {answer.constitutional_score != null && (
-                  <Badge tone={answer.needs_review ? "amber" : "green"}>constitutional score {answer.constitutional_score}</Badge>
-                )}
-                {answer.audit_id != null && <Badge tone="slate">audit #{answer.audit_id}</Badge>}
-                {answer.model && <Badge tone="slate">{answer.model}</Badge>}
-              </div>
-
-              {hasChat && (
-                <div>
-                  <SectionTitle>Full recommendation</SectionTitle>
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{answer.response}</p>
-                </div>
+      {hasInternals && (
+        <details className="group rounded-lg border border-slate-800 bg-black/20">
+          <summary className="cursor-pointer select-none list-none rounded-lg px-3 py-2 text-xs text-cyan-300 hover:bg-cyan-400/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 [&::-webkit-details-marker]:hidden">
+            <span aria-hidden="true" className="mr-1.5 inline-block transition-transform group-open:rotate-90">
+              ▸
+            </span>
+            Show internal reasoning &amp; sources
+          </summary>
+          <div className="space-y-4 border-t border-slate-800 px-3 py-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {answer.constitutional_score != null && (
+                <Badge tone={answer.needs_review ? "amber" : "green"}>constitutional score {answer.constitutional_score}</Badge>
               )}
-
-              {answer.reasoning_chain.length > 0 && (
-                <div>
-                  <SectionTitle>Reasoning chain</SectionTitle>
-                  <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-300 marker:text-cyan-400/60">
-                    {answer.reasoning_chain.map((step, i) => (
-                      <li key={i}>{step}</li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-
-              {answer.scenarios && (
-                <div>
-                  <SectionTitle>Scenarios</SectionTitle>
-                  <ScenarioGrid scenarios={answer.scenarios} />
-                </div>
-              )}
-
-              {answer.sources.length > 0 && (
-                <div>
-                  <SectionTitle>Sources</SectionTitle>
-                  <List items={answer.sources} />
-                </div>
-              )}
+              {answer.audit_id != null && <Badge tone="slate">audit #{answer.audit_id}</Badge>}
+              {answer.model && <Badge tone="slate">{answer.model}</Badge>}
             </div>
-          )}
-        </div>
+
+            {chat && (
+              <div>
+                <SectionTitle>Full recommendation</SectionTitle>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{body}</p>
+              </div>
+            )}
+
+            {reasoning.length > 0 && (
+              <div>
+                <SectionTitle>Reasoning chain</SectionTitle>
+                <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-300 marker:text-cyan-400/60">
+                  {reasoning.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
+            {answer.scenarios && (
+              <div>
+                <SectionTitle>Scenarios</SectionTitle>
+                <ScenarioGrid scenarios={answer.scenarios} />
+              </div>
+            )}
+
+            {sources.length > 0 && (
+              <div>
+                <SectionTitle>Sources</SectionTitle>
+                <List items={sources} />
+              </div>
+            )}
+
+            {documents.length > 0 && (
+              <div>
+                <SectionTitle>Knowledge base documents retrieved</SectionTitle>
+                <List items={documents} />
+              </div>
+            )}
+          </div>
+        </details>
       )}
     </Card>
   );
