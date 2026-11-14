@@ -145,6 +145,110 @@ def mock_generate_image(prompt: str) -> str:
     return f"{MOCKUP_BASE}?text={quote_plus('CMO ' + label)}"
 
 
+# ------------------------------------------------------------------------------------------------ tool: read a file (read-only)
+MAX_READ_BYTES = 60_000  # a longer file is cut off and the reader is told; it keeps one answer from drowning the model
+CUT_OFF_MARK = "[... file cut off here:"  # appended to a file that was too long: a cut-off file has NOT been fully read
+_REF_OK = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
+
+# How the model is offered the tool (Anthropic's tool format). The CTO is offered ONLY this tool.
+READ_TOOL_NAME = "github_read_file"
+READ_TOOL_SPEC: dict[str, Any] = {
+    "name": READ_TOOL_NAME,
+    "description": (
+        "Read ONE file from the Century Aqua project's own repository and get back its text. It only reads: it changes nothing, "
+        "needs no approval, and you may call it any time. Use it to look at code before you advise on it, and ALWAYS before you "
+        "propose a change to an existing file. Secret files (environment files, keys) cannot be read. A missing file or a "
+        "folder returns a short ERROR line instead of text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "The file's path from the repository root, for example frontend/src/components/mc/AgentChat.tsx"},
+            "branch": {"type": "string", "description": "The branch to read. Leave it out for main, which is the branch a change is made from."},
+        },
+        "required": ["file_path"],
+    },
+}
+
+
+def github_read_file(file_path: str, branch: str = "main") -> str:
+    """
+    READ ONE FILE from the project's own repository and return its text. This is the CTO's eyes. It is read-only and safe:
+    it changes nothing, so it needs no authorization request.
+
+    Returns the file's text, or, when it cannot, a short plain error string that begins with "ERROR:" (for example
+    "ERROR: File not found: ..."). It never raises and never returns anything but a string.
+
+    Guards, all in code: the repository is fixed by the server (GITHUB_OWNER / GITHUB_REPO, never a caller's argument); the
+    path must be a clean relative path, and anything that holds a SECRET (env files, keys, credentials, the .git folder) is
+    refused by name, and anything inside an ordinary file that looks like a key or token is replaced by a marker, so a read
+    does not put a secret in front of the model, a log or a stored answer (a pattern check: an unusual format is not caught);
+    the branch name is checked; a folder, a binary file or a very large file is reported, not dumped. The token (GITHUB_PAT)
+    is read at call time and never appears in a result or a log line.
+    """
+    tool = "github_read_file"
+    try:
+        owner, repo = allowed_repo()
+        if not isinstance(branch, str) or not _REF_OK.match(branch) or ".." in branch or branch.startswith(("/", "-")):
+            return "ERROR: that branch name is not valid"
+        try:
+            path = plan_rules.check_path_for_read(file_path)
+        except plan_rules.PlanError as exc:
+            return f"ERROR: {exc}"
+        if not configured():
+            return "ERROR: GITHUB_PAT is not set on this server, so no file can be read"
+        url = f"{API}/repos/{owner}/{repo}/contents/{quote(path, safe='/')}"
+        try:
+            # The raw media type returns the file's own text instead of JSON with base64. A folder still answers with JSON.
+            response = requests.request(
+                "GET", url, params={"ref": branch}, timeout=TIMEOUT_SECONDS,
+                headers={**_headers(), "Accept": "application/vnd.github.v3.raw"},
+            )
+        except requests.Timeout:
+            return "ERROR: GitHub did not answer in time"
+        except requests.RequestException as exc:
+            logger.error("tools: %s could not reach GitHub (%s)", tool, type(exc).__name__)
+            return "ERROR: could not reach GitHub"
+        if response.status_code == 404:
+            return f"ERROR: File not found: {path} (on branch {branch})"
+        if response.status_code != 200:
+            return "ERROR: " + _api_error(response)
+        if "json" in str(response.headers.get("Content-Type", "")).lower():  # a folder (or a submodule) answers with JSON
+            return f"ERROR: {path} is a folder, not a file. Read a specific file inside it."
+        raw = response.content or b""
+        if b"\x00" in raw[:8000]:
+            return f"ERROR: {path} is a binary file and cannot be read as text"
+        text = plan_rules.redact_secrets(raw[:MAX_READ_BYTES].decode("utf-8", errors="replace"))
+        if len(raw) > MAX_READ_BYTES:
+            text += f"\n\n{CUT_OFF_MARK} it is {len(raw):,} bytes and only the first {MAX_READ_BYTES:,} are shown. It is too large to rewrite whole.]"
+        return text
+    except Exception as exc:  # a read tool must never take the app down
+        logger.error("tools: %s failed (%s)", tool, type(exc).__name__)
+        return "ERROR: the file could not be read"
+
+
+def github_file_status(file_path: str) -> str:
+    """
+    Does ``file_path`` exist on the repository's default branch? Returns "exists", "missing" or "unknown" (it could not be
+    checked: no token, a network problem, an unclean path). Read-only. Used by the CTO to tell a NEW file (fine to create) from an
+    EXISTING file it must have read first. "unknown" is never treated as "missing": the caller fails closed.
+    """
+    try:
+        path = plan_rules.check_path_for_read(file_path)
+    except plan_rules.PlanError:
+        return "unknown"
+    try:
+        owner, repo = allowed_repo()
+        response, failure = _call("github_file_status", "GET", f"/repos/{owner}/{repo}/contents/{quote(path, safe='/')}")
+        if failure or response is None:
+            return "unknown"
+        if response.status_code == 200:
+            return "exists"
+        return "missing" if response.status_code == 404 else "unknown"
+    except Exception:
+        return "unknown"
+
+
 # ------------------------------------------------------------------------------------------------ GitHub helpers
 def _default_branch(tool: str, owner: str, repo: str) -> tuple[str | None, ToolResult | None]:
     response, failure = _call(tool, "GET", f"/repos/{owner}/{repo}")
@@ -302,5 +406,6 @@ TOOLS = {
     "github_create_branch": github_create_branch,
     "github_write_file": github_write_file,
     "github_open_pr": github_open_pr,
+    "github_read_file": github_read_file,  # read-only: changes nothing, so it needs no authorization (the CTO's eyes)
 }
 

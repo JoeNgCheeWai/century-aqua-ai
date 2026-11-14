@@ -440,7 +440,7 @@ class CmoEndToEndTests(GuardedTestCase):
 
 class BoundaryTests(unittest.TestCase):
     def test_the_audited_tool_router_is_unchanged_and_only_the_cmo_imports_the_image_tool(self):
-        self.assertEqual(sorted(tools.TOOLS), ["github_create_branch", "github_open_pr", "github_write_file", "mock_generate_image"])
+        self.assertEqual(sorted(tools.TOOLS), ["github_create_branch", "github_open_pr", "github_read_file", "github_write_file", "mock_generate_image"])
         importers = {p.name for p in (BACKEND_DIR / "app").rglob("*.py") if p.name != "image_tool.py" and "image_tool" in p.read_text(encoding="utf-8")}
         self.assertEqual(importers, {"cmo_agent.py", "cmo_authorization.py"})
 

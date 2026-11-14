@@ -376,7 +376,9 @@ class AuthorizationApiTests(ApiBase):
         used = {n.args[1].value for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_call"
                 and len(n.args) > 1 and isinstance(n.args[1], ast.Constant)}
         self.assertEqual(used, {"GET", "POST", "PUT"})  # no DELETE, no PATCH: nothing can be removed or force-moved
-        self.assertEqual(sorted(tools.TOOLS), ["github_create_branch", "github_open_pr", "github_write_file", "mock_generate_image"])
+        # github_read_file was added on purpose (the CTO's read-only eyes). It is the ONLY addition, it only GETs, and the check
+        # above that every _call uses GET, POST or PUT only still holds. A new tool must be added here deliberately.
+        self.assertEqual(sorted(tools.TOOLS), ["github_create_branch", "github_open_pr", "github_read_file", "github_write_file", "mock_generate_image"])
 
 
 

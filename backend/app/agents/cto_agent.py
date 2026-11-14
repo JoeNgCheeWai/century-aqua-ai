@@ -13,19 +13,21 @@ Phase 3 of the AI Executive Team. It is built on exactly the same foundations as
     audit.record_response('cto', ...) in AgentAuditLog.
 
 What is different is the role (thirteen pillars, prompts/cto_prompt.py) and the AUTHORIZATION
-WORKFLOW: the CTO has no tools and never executes anything. A request involving a code change or
+WORKFLOW: the CTO's only tool is github_read_file (read-only, so it needs no authorization), and it never executes anything. A request involving a code change or
 a system amendment produces a structured ``authorization_request`` that waits for a human
 (app/agents/cto_authorization.py). Its status is forced to "pending_human_approval" in code.
 
 This module deliberately does not change cao_agent.py or coo_agent.py: both are live in production.
 """
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
+from app.agents import tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -36,7 +38,7 @@ from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
-from app.prompts.persona import persona_block
+from app.prompts.persona import CTO_ENGINEER_PROMPT, persona_block
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ AGENT_ID = "cto"
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution). The
 # authorization workflow, the execution_plan template and the JSON format below are unchanged.
 CTO_ROLE_PROMPT = (
-    persona_block("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    persona_block("cto") + "\n\n" + CTO_ENGINEER_PROMPT + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CTO_EXECUTION_PLAN_PROMPT
 )
 
@@ -118,6 +120,100 @@ async def _build_system_prompt(query: str, use_rag: bool) -> tuple[str, list]:
     return system, result.sources
 
 
+MAX_FILE_READS = 6  # a hard cap on file reads in ONE answer (each is a network call and fills the model's context)
+MAX_TOOL_ROUNDS = 6  # a hard stop on the model-calls-tool loop, whatever the model asks for
+
+
+def log_tools_available(tool_list: list[dict]) -> None:
+    """One line at the start of every CTO answer: the tools offered to the model (a print, not logger.info, so Render shows it)."""
+    print(f"CTO tools available: {[t['name'] for t in tool_list]} (github token set: {tools.configured()})", flush=True)
+
+
+def _normal_path(path: str) -> str:
+    return path.strip().lower()
+
+
+async def _create_with_reader(client, *, model: str, system: str, messages: list[dict]):
+    """
+    ONE answer with the read-only file tool on offer. Returns (the final response, the set of file paths the CTO READ in full).
+
+    github_read_file is SAFE (it only reads), so no authorization is needed and the CTO may call it freely. The loop is bounded:
+    at most MAX_FILE_READS reads (a further request gets an error result), at most MAX_TOOL_ROUNDS rounds, and a last call with
+    tool use switched off if the model is still asking. The tool blocks (an HTTP call), so it runs in a worker thread. Only the
+    branch ``main`` is read, whatever the model asks for: a change is made from main, so main is what must have been read.
+    A file that was cut off (too long) is NOT counted as read: it cannot be rewritten whole.
+    """
+    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system, "tools": [tools.READ_TOOL_SPEC]}
+    log_tools_available(common["tools"])
+    convo = list(messages)
+    read: set[str] = set()
+    made = 0
+    response = await client.messages.create(messages=convo, **common)
+    for _ in range(MAX_TOOL_ROUNDS):
+        if response.stop_reason != "tool_use":
+            return response, read
+        results = []
+        for block in response.content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            args = getattr(block, "input", None)
+            args = args if isinstance(args, dict) else {}
+            if getattr(block, "name", None) != tools.READ_TOOL_NAME:
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True, "content": "Unknown tool. Only github_read_file exists."})
+            elif made >= MAX_FILE_READS:
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
+                                "content": f"File-read limit reached ({MAX_FILE_READS} per answer). Work with the files you have already read."})
+            else:
+                made += 1
+                path = args.get("file_path")
+                text = await asyncio.to_thread(tools.github_read_file, path if isinstance(path, str) else "", "main")
+                failed = text.startswith("ERROR:")
+                if not failed and tools.CUT_OFF_MARK not in text and isinstance(path, str):
+                    read.add(_normal_path(path))
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": failed, "content": text})
+        if not results:
+            return response, read
+        convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": results}]
+        response = await client.messages.create(messages=convo, **common)
+    if response.stop_reason == "tool_use":
+        # Still asking after the last round: one more call with tools switched off so the model must write its answer.
+        pending = [{"type": "tool_result", "tool_use_id": b.id, "is_error": True, "content": "Tool limit reached. Write your final answer now."}
+                   for b in response.content if getattr(b, "type", None) == "tool_use"]
+        convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": pending}]
+        response = await client.messages.create(messages=convo, tool_choice={"type": "none"}, **common)
+    return response, read
+
+
+async def _enforce_read_before_write(authorization_request: dict | None, read: set[str]) -> tuple[dict | None, list[str]]:
+    """
+    THE GOLDEN RULE, enforced in code and not left to the model: a plan may only UPDATE an existing file that the CTO read in
+    full during this answer. A new file (one that does not exist on main) needs no read.
+
+    For each file in the plan that was not read, the repository is asked whether it exists. "exists" or "unknown" (the check
+    itself failed) means the plan is refused: it fails closed, never open. The WHOLE execution_plan is dropped (the plan is all or
+    nothing, a pull request missing a piece is worse than none), with a plain finding that says which file and why. The rest of
+    the request (the explanation, the diff text) stands. Returns (the request, findings).
+    """
+    plan = (authorization_request or {}).get("execution_plan")
+    if not plan:
+        return authorization_request, []
+    unread = [f["path"] for f in plan["files_to_update"] if _normal_path(f["path"]) not in read]
+    blocked: list[str] = []
+    for path in unread:
+        status = await asyncio.to_thread(tools.github_file_status, path)
+        if status != "missing":
+            blocked.append(f"{path} ({'it exists' if status == 'exists' else 'could not check whether it exists'})")
+    if not blocked:
+        return authorization_request, []
+    finding = ("execution_plan dropped: it would overwrite existing file(s) the CTO did not read first with github_read_file: "
+               + "; ".join(blocked) + ". Ask the CTO again and it will read them before proposing the change.")
+    revised = dict(authorization_request)
+    revised["execution_plan"] = None
+    if not (revised.get("proposed_code_diff") or revised.get("proposed_commands")):
+        return None, [finding, "the authorization_request had nothing left to review without its plan; dropped"]
+    return revised, [finding]
+
+
 @dataclass
 class CTOResult:
     """The CTO's answer plus the governance facts about it. The CAO's fields plus authorization_request."""
@@ -158,6 +254,7 @@ async def get_cto_result(
     audit: bool = True,
     user_id: str = "unknown",
     model_tier: str | None = None,
+    reader: bool = True,
 ) -> CTOResult:
     """
     Generate an AI_CTO response and record it for accountability.
@@ -196,12 +293,17 @@ async def get_cto_result(
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, CTO_MODEL)
-    response = await _get_client().messages.create(
-        model=model_id,
-        max_tokens=CTO_MAX_TOKENS,
-        system=system,
-        messages=messages,
-    )
+    files_read: set[str] = set()
+    if reader:
+        response, files_read = await _create_with_reader(_get_client(), model=model_id, system=system, messages=messages)
+    else:  # a review of another executive's recommendation: no tools, exactly as before
+        log_tools_available([])
+        response = await _get_client().messages.create(
+            model=model_id,
+            max_tokens=CTO_MAX_TOKENS,
+            system=system,
+            messages=messages,
+        )
 
     raw = "".join(block.text for block in response.content if block.type == "text")
     parsed = parse_cao_output(raw)
@@ -214,6 +316,9 @@ async def get_cto_result(
     if data is not None:
         authorization_request, auth_findings = normalize_authorization_request(data.get("authorization_request"))
         format_findings.extend(auth_findings)
+        # The Golden Rule, in code: a plan may only overwrite an existing file the CTO read in full during THIS answer.
+        authorization_request, read_findings = await _enforce_read_before_write(authorization_request, files_read)
+        format_findings.extend(read_findings)
     if format_findings:
         logger.warning("CTO output format: %s", "; ".join(format_findings))
 
@@ -289,5 +394,5 @@ async def get_cto_answer(
     (cross_validation.cross_check) can ask the CTO to review another agent's recommendation.
     See get_cto_result for the governance details.
     """
-    return (await get_cto_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id)).reply
+    return (await get_cto_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id, reader=False)).reply
 
