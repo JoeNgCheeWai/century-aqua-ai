@@ -23,7 +23,7 @@ import requests  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.agents import cto_authorization, cmo_authorization  # noqa: E402
-from app.governance import admin_store  # noqa: E402
+from app.governance import admin_store, strategy_store  # noqa: E402
 
 from tests.test_tools import TOKEN, FakeGitHub, good_plan  # noqa: E402
 
@@ -90,7 +90,17 @@ class ApprovalBase(unittest.TestCase):
         self.client = TestClient(app)
         self.store = MemoryAuditStore(request, agent, human)
         self.gh = FakeGitHub()
+        # The learning loop (strategy_store) is not what these tests are about, and it would try a real database connection. It is
+        # stubbed here and recorded, so a test can still see whether an approval asked for the strategy to be remembered. The memory
+        # itself is tested against a real database in tests/test_strategy_memory.py.
+        self.remembered = []
+
+        async def fake_save(audit_id, actor=None):
+            self.remembered.append((audit_id, actor))
+            return "saved"
+
         for patcher in (
+            mock.patch.object(strategy_store, "save_approved_strategy", fake_save),
             mock.patch.dict(os.environ, {"INTERNAL_COUNCIL_KEY": COUNCIL_KEY, "GITHUB_PAT": TOKEN, "GITHUB_OWNER": "", "GITHUB_REPO": "",
                                          "GOVERNANCE_DATABASE_URL": "postgres://u:p@localhost:1/x"}),
             mock.patch.object(admin_store, "decide_authorization", self.store.decide_authorization),

@@ -31,10 +31,11 @@ from app.agents.cao_reasoning import parse_cao_output
 from app.agents.chat_reply import vetted_chat_reply
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
+from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import CHAT_REPLY_PROMPT
 from app.prompts.coo_prompt import COO_REASONING_PROMPT, COO_SYSTEM_PROMPT
-from app.prompts.persona import persona_block
+from app.prompts.persona import expert_role, persona_block, thinking_process
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,11 @@ AGENT_ID = "coo"
 
 # The COO's role prompt (ten pillars) plus the structured output format (same shape as the CAO's).
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution).
-COO_ROLE_PROMPT = persona_block("coo") + "\n\n" + COO_SYSTEM_PROMPT + "\n\n" + COO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+# Then the top-operations-expert role and the Strategic Thinking Process (its three steps go inside the existing reasoning_chain).
+COO_ROLE_PROMPT = (
+    persona_block("coo") + "\n\n" + expert_role("coo") + "\n\n" + thinking_process("coo") + "\n\n"
+    + COO_SYSTEM_PROMPT + "\n\n" + COO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+)
 
 # The constitution comes FIRST, then the COO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(COO_ROLE_PROMPT)
@@ -152,6 +157,7 @@ async def get_coo_result(
     audit: bool = True,
     user_id: str = "unknown",
     model_tier: str | None = None,
+    memory: bool = True,
 ) -> COOResult:
     """
     Generate an AI_COO response and record it for accountability.
@@ -182,6 +188,8 @@ async def get_coo_result(
     messages.append({"role": "user", "content": query})
 
     system, sources = await _build_system_prompt(query, use_rag)
+    if memory:  # the learning loop: the COO's own past approved strategies that bear on this question (never raises)
+        system, _ = await strategy_store.with_memory(system, AGENT_ID, query)
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, COO_MODEL)
@@ -259,5 +267,5 @@ async def get_coo_answer(
     cross-validation (cross_validation.cross_check) can ask the COO to review the CAO.
     See get_coo_result for the governance details.
     """
-    return (await get_coo_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id)).reply
+    return (await get_coo_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id, memory=False)).reply
 

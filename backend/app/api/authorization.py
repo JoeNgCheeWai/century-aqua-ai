@@ -22,6 +22,10 @@ THE EXECUTION RULES (enforced here and in the tool router, not left to the agent
       ``execution``, so Mission Control shows it. ``executed`` stays false: the CHANGE is not live until a human merges the PR
     * a rejection never executes anything
 
+THE LEARNING LOOP (after the decision is recorded, and only for an approval). A short summary of the approved strategy is saved to
+ApprovedStrategies (app/governance/strategy_store.py) so the agent that proposed it can recall it later as past experience. It never
+blocks or undoes the decision, and it saves nothing for a rejection. The response says what happened under ``strategy_memory``.
+
 The agent's original ``timestamp`` is never rewritten (Clause 6), which is why the decision time has its own column.
 
 RULES (enforced inside one atomic UPDATE, so two people acting at once cannot both win)
@@ -45,7 +49,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from app.agents import tools
 from app.api.security import require_actor, require_council_key
-from app.governance import admin_store, db
+from app.governance import admin_store, db, strategy_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -113,6 +117,11 @@ async def _decide(audit_id: int, action: str, x_internal_council_key: str | None
         "executed": False,
         "note": _NOTE,
     }
+    if action == "approve":
+        # THE LEARNING LOOP: remember what the CEO approved, so the agent that proposed it can recall it later as experience. This
+        # runs right after the decision is recorded and BEFORE anything executes. It never raises and never blocks: a failure to
+        # remember is logged and the approval, and any pull request, carry on exactly as before. A rejection saves nothing.
+        body["strategy_memory"] = await strategy_store.save_approved_strategy(audit_id, actor)
     if action == "approve":  # a rejection never executes anything
         outcome = await _execute_if_planned(audit_id, actor, str(row["agentId"]))
         if outcome is not None:
