@@ -70,7 +70,7 @@ async def get_aquaculture_answer(query: str, history: list[dict] = None) -> str:
     
     response = await _get_client().messages.create(
         model=SPECIALIST_MODEL,
-        max_tokens=1000,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=messages,
     )
