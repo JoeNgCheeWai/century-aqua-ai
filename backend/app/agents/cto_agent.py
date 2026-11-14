@@ -36,14 +36,17 @@ from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
+from app.prompts.persona import persona_block
 
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "cto"
 
 # The CTO's role prompt (thirteen pillars and the authorization workflow) plus the structured output format.
+# The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution). The
+# authorization workflow, the execution_plan template and the JSON format below are unchanged.
 CTO_ROLE_PROMPT = (
-    CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    persona_block("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CTO_EXECUTION_PLAN_PROMPT
 )
 

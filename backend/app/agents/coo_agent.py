@@ -34,13 +34,15 @@ from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import CHAT_REPLY_PROMPT
 from app.prompts.coo_prompt import COO_REASONING_PROMPT, COO_SYSTEM_PROMPT
+from app.prompts.persona import persona_block
 
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "coo"
 
 # The COO's role prompt (ten pillars) plus the structured output format (same shape as the CAO's).
-COO_ROLE_PROMPT = COO_SYSTEM_PROMPT + "\n\n" + COO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+# The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution).
+COO_ROLE_PROMPT = persona_block("coo") + "\n\n" + COO_SYSTEM_PROMPT + "\n\n" + COO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
 
 # The constitution comes FIRST, then the COO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(COO_ROLE_PROMPT)

@@ -6,6 +6,8 @@ the Executive Constitution plus Clause 17 (added by build_system_prompt(include_
 short role cards below, so ten calls fit the session token budget. Every card ends with the same JSON contract.
 """
 
+from app.prompts import persona
+
 ROLE_CARDS: dict[str, str] = {
     "cao": (
         "You are AI_CAO, Chief Aquaculture Officer: species, biology, water quality, farm science, regulation of "
@@ -65,4 +67,7 @@ An option without a concrete failure mode is rejected."""
 
 
 def role_card(agent_id: str) -> str:
-    return ROLE_CARDS[agent_id]
+    """The agent's compact role card plus one short voice line (plain words, polite, solution-minded). The turn contracts
+    that follow (TURN_CONTRACT and the others) still set the JSON shape and the hard word limits, and they come after this
+    line, so they win any conflict. The full persona block is NOT used here: a turn is capped at 150 words of JSON."""
+    return ROLE_CARDS[agent_id] + "\n\n" + persona.compact_block()

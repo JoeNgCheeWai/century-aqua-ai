@@ -19,13 +19,16 @@ from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.cao_prompt import CAO_REASONING_PROMPT, CAO_SYSTEM_PROMPT
 from app.prompts.chat_style import CHAT_REPLY_PROMPT
+from app.prompts.persona import persona_block
 
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "cao"
 
 # The CAO's role prompt plus the Phase 1 reasoning and prediction format (cao_prompt.py).
-CAO_ROLE_PROMPT = CAO_SYSTEM_PROMPT + "\n\n" + CAO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+# The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution), so they set
+# the tone for everything below them. They change how the CAO speaks, not the JSON format or any other rule.
+CAO_ROLE_PROMPT = persona_block("cao") + "\n\n" + CAO_SYSTEM_PROMPT + "\n\n" + CAO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
 
 # The constitution comes FIRST, then the CAO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(CAO_ROLE_PROMPT)

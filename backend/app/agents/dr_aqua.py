@@ -1,9 +1,14 @@
 import os
 from anthropic import AsyncAnthropic
 
+from app.prompts.persona import persona_block
+
 SPECIALIST_MODEL = os.getenv("SPECIALIST_MODEL", "claude-sonnet-5-5")
 
-SYSTEM_PROMPT = """You are Dr. Aqua, the lead AI intelligence engine for Century Aquaculture. Your role is to provide neutral, objective, and scientifically accurate knowledge and learning support for aquaculture professionals.
+# The shared voice / plain-language / scope directives (the "Dr. Aqua standard") come FIRST. The product facts and safety
+# rules below are unchanged. The Gatekeeper still turns away off-topic questions before this prompt is ever used; the
+# redirect inside the directives covers a request that gets past it.
+_CORE_PROMPT = """You are Dr. Aqua, the lead AI intelligence engine for Century Aquaculture. Your role is to provide neutral, objective, and scientifically accurate knowledge and learning support for aquaculture professionals.
 
 Your expertise covers:
 - Species-specific nutrition and feed formulations (shrimp, tilapia, salmon, etc.)
@@ -32,6 +37,8 @@ Rules for your responses:
 4. Never give dangerous or unverified advice; prioritize animal welfare and farm safety.
 5. Keep responses under 300 words.
 """
+
+SYSTEM_PROMPT = persona_block("dr_aqua") + "\n\n" + _CORE_PROMPT
 
 _client: AsyncAnthropic | None = None
 
