@@ -115,23 +115,32 @@ class CtoPromptTests(unittest.TestCase):
         for module in (cao_agent, coo_agent):
             self.assertNotIn("execution_plan", module.BASE_SYSTEM_PROMPT, module.__name__)
             self.assertNotIn("mock_generate_image", module.BASE_SYSTEM_PROMPT, module.__name__)
+            self.assertNotIn("generate_image", module.BASE_SYSTEM_PROMPT, module.__name__)
         self.assertNotIn("mock_generate_image", cto_agent.BASE_SYSTEM_PROMPT)
+        self.assertNotIn("generate_image", cto_agent.BASE_SYSTEM_PROMPT)
         self.assertNotIn("CTO_EXECUTION_PLAN", cmo_agent.BASE_SYSTEM_PROMPT)
 
 
 class CmoPromptTests(unittest.TestCase):
-    def test_the_cmo_is_told_it_can_use_mock_generate_image_for_ui_mockups(self):
+    def test_the_cmo_is_told_it_can_call_generate_image_for_mockups(self):
         text = chat_style.CMO_UI_PROMPT
-        self.assertIn("mock_generate_image", text)
+        self.assertIn("generate_image", text)
+        self.assertNotIn("mock_generate_image", text)
         self.assertIn("mockup_urls", text)
-        self.assertIn("https://placehold.co/", text)
+        self.assertIn("https://placehold.co/", text)  # only as the labelled fall-back
         self.assertIn(chat_style.CMO_UI_PROMPT.strip(), cmo_agent.BASE_SYSTEM_PROMPT)
 
-    def test_the_cmo_is_told_a_mockup_is_a_placeholder_not_a_design_and_never_to_invent_an_address(self):
+    def test_the_cmo_is_told_a_mockup_is_ai_generated_a_draft_and_never_to_invent_an_address(self):
         text = chat_style.CMO_UI_PROMPT
-        self.assertIn("PLACEHOLDER", text)
-        self.assertIn("NOT a real design", text)
+        self.assertIn("AI-generated mockup", text)
+        self.assertIn("draft for a human to judge", text)
+        self.assertIn("You cannot see the image", text)
         self.assertIn("Never invent", text)
+        self.assertIn("at most 2 times per answer", text)
+        # A placeholder must still never be passed off as the requested picture.
+        self.assertIn("PLACEHOLDER", text)
+        self.assertIn("not the requested image", text)
+        self.assertNotIn("NOT a real design", text)
 
     def test_the_cmo_may_include_a_pull_request_plan_for_ui_files_and_is_told_approving_publishes_nothing(self):
         text = chat_style.CMO_UI_PROMPT

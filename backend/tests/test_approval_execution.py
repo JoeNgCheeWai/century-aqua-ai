@@ -307,7 +307,7 @@ class NormalizerAcceptsPlansTests(unittest.TestCase):
         self.assertIsNone(request["execution_plan"])
         self.assertTrue(any("secret" in f for f in findings))
 
-    def test_cmo_mockup_urls_keep_only_the_placeholder_host_and_a_plan_alone_is_enough(self):
+    def test_cmo_mockup_urls_keep_only_placeholders_and_a_plan_alone_is_enough(self):
         urls = ["https://placehold.co/800x600/1a1a2e/00ffff?text=CMO+Hero", "https://evil.example/x.png", "http://placehold.co/x", 5, "https://placehold.co/a b"]
         request, findings = cmo_authorization.normalize_authorization_request(
             {"action_summary": "Refresh hero", "risk_level": "low", "impact": "i", "mockup_urls": urls, "execution_plan": good_plan()})
