@@ -41,14 +41,17 @@ from app.governance import audit as audit_module
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CMO_UI_PROMPT
 from app.prompts.cmo_prompt import CMO_REASONING_PROMPT, CMO_SYSTEM_PROMPT
+from app.prompts.persona import persona_block
 
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "cmo"
 
 # The CMO's role prompt (four pillars, claims discipline, authorization workflow) plus the structured output format.
+# The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution). The
+# authorization workflow, the generate_image tool text and the JSON format below are unchanged.
 CMO_ROLE_PROMPT = (
-    CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    persona_block("cmo") + "\n\n" + CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CMO_UI_PROMPT
 )
 

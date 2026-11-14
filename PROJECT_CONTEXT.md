@@ -1030,3 +1030,20 @@ With the real model, a plan request returned unparseable JSON in 3 of 7 samples 
 - **A rejection of a bad plan is silent to the agent.** A refused plan is dropped with a finding in the log; the human sees an ordinary request without the "What approving will do" box.
 
 - **The longer system prompt costs a little more per call** (about 500 tokens for the chat-reply block, about 250 more for the summary block on the CTO and CMO).
+
+---
+
+## 20. Agent personality, plain language and scope (the "Dr. Aqua standard")
+
+**What changed.** One shared block of directives, `backend/app/prompts/persona.py`, is placed at the TOP of every agent's role prompt, right after the Executive Constitution (which is still first and still pinned by tests). It asks for: a warm, encouraging, senior-colleague voice with specific and true praise and respectful, reasoned disagreement; plain language with every technical term defined at its first appearance, and a reasoning chain and sources written like a colleague thinking out loud; 1 or 2 concrete actions whenever a problem is discussed; and a scope limit to Century Aqua's business. The CAO, COO, CTO, CMO and Dr. Aqua each get it (`persona_block(agent_id)`). Boardroom turns get only one short line (`compact_block()`), because a turn is capped at 150 words of JSON.
+
+**Scope rule (decided by the owner).** In scope: aquaculture, plus the business that supports the farm (the Mission Control platform, AI tooling, the website, brand, marketing, operational and business strategy). Out of scope (recipes, personal advice, unrelated industries, homework, trivia, coding lessons unrelated to our systems): the agent replies with its own redirect sentence, word for word (`persona.REDIRECTS`). The CTO and CMO sentences are the owner's, the CAO and COO ones adapt them, and Dr. Aqua keeps the original.
+
+**What it does NOT change.** The JSON answer shape, `chat_reply`, `authorization_request`, `executive_summary`, `execution_plan`, `mockup_urls`, the tools, the constitution's required lines, and cross-check verdict mode (answers with only the JSON verdict). `tests/test_persona.py` (22 tests) pins all of that. The old "boardroom / no hype" tone lines in the role prompts are left in place and the block says its voice wins; they are not rewritten.
+
+**Limits, stated plainly.**
+- **It is an instruction to a model, not enforcement.** Only the public `/api/chat` has a Gatekeeper in front of it. The four executives have none, so an out-of-scope question is refused only if the model follows the text. `backend/scripts/try_personality.py` runs real questions (a cake recipe, a disguised coding request, a technical shrimp-nursery question) through each agent and checks the result. A run on this branch passed every hard check for the CAO, COO, CTO and CMO. The plain-language checks are crude signals (sentence length, a term with no explanation beside it) and gave a few warnings (for example "nitrite" not explained at its first use). A person should read the replies. It is a spot check on one run, not a measured rate.
+- **Finding, not caused by this change:** Dr. Aqua asks for `max_tokens=1000`, and the model spends part of that on hidden reasoning, so a long answer can come back cut off or nearly empty. It was reproduced on the original prompt too (`stop_reason=max_tokens`). The script reports it as a failure. Raising Dr. Aqua's token limit is a separate, one-line decision that was not made here.
+- **Cost.** The block adds about 1,350 tokens to each executive call (about 680 for Dr. Aqua) on top of a 22 to 44 thousand character prompt, and about 90 tokens to each Boardroom turn.
+- **Warmth vs. honesty.** The block tells the agents that praise must be specific and true and that warmth never softens a safety warning, a compliance flag or a low-confidence statement. A model can still over-praise; nothing in code checks it.
+
