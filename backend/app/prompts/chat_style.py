@@ -51,6 +51,47 @@ EXECUTION_PLAN_FIELDS = """  "execution_plan": {
     "pr_body": "what changed, why, and how to check it"
   }"""
 
+# A raw string on purpose: the example's \n and \" must reach the model as the two characters they are in JSON, not as a real
+# newline and a bare quote (that would make the example itself invalid JSON). tests/test_phase_6_6_prompts.py parses it and runs it
+# through the same validators the backend uses, so the template can never drift into a shape the backend would drop.
+CTO_EXECUTION_TEMPLATE = r"""CRITICAL EXECUTION RULE: When proposing code changes, you MUST output a valid JSON object named execution_plan inside your authorization_request. Do not just describe the plan in text. You must fill out this exact schema. This is the authorization_request part of your single JSON answer: the other fields (response, reasoning_chain, scenarios, pre_consultation_requests) still apply as described above. The values below are an EXAMPLE of the shape: replace every value with your own for the actual request, and do not copy the example file unless it is what was asked for.
+
+{
+  "authorization_request": {
+    "action_summary": "Add a new PrivacyToggle component for the Boardroom form, as a pull request for review.",
+    "risk_level": "medium",
+    "impact": "Adds one new file that nothing imports yet, so no existing behaviour changes. Reversible by closing the pull request.",
+    "proposed_code_diff": "New file frontend/src/components/mc/PrivacyToggle.tsx: a parent-controlled Private/Shared toggle.",
+    "proposed_commands": [],
+    "rollback_plan": "Close the pull request. Nothing is merged until a human merges it.",
+    "executive_summary": {
+      "purpose": "Give the Boardroom a switch that shows whether a session is private or shared.",
+      "problem": "Right now there is no visible way to mark a session as private or shared.",
+      "risk": "It only adds a new control that nothing uses yet, and the pull request is reviewed before anything changes."
+    },
+    "execution_plan": {
+      "branch_name": "agent/privacy-toggle-component",
+      "files_to_update": [
+        {
+          "path": "frontend/src/components/mc/PrivacyToggle.tsx",
+          "content": "'use client';\n\nexport default function PrivacyToggle({ mode, onChange }: { mode: string, onChange: (m: string) => void }) {\n  return (\n    <div className=\"flex items-center gap-2\">\n      <span className=\"text-slate-400\">Private</span>\n      <button className=\"w-12 h-6 bg-emerald-500 rounded-full relative\">\n        <span className=\"absolute right-1 top-1 w-4 h-4 bg-white rounded-full\"></span>\n      </button>\n      <span className=\"text-amber-400\">Shared</span>\n    </div>\n  );\n}",
+          "commit_message": "Add PrivacyToggle component"
+        }
+      ],
+      "pr_title": "Feat: Add PrivacyToggle component for Boardroom",
+      "pr_body": "Implements the dark-themed toggle as specified by CMO. Assumes parent-controlled props (mode, onChange). No backend enforcement yet."
+    }
+  }
+}
+
+Rules for the CTO:
+- You MUST provide the full file content in the content string.
+- You MUST use the files_to_update key (not files_to_create).
+- You MUST make reasonable assumptions about props and styling if they are undefined, state those assumptions in the pr_body, and generate the JSON anyway. Do not defer to the human.
+- "action_summary" is required: without it the system drops the whole authorization_request, plan included. "executive_summary" is an object with exactly purpose, problem and risk (plain words, no file names), never a single string.
+- Writing "Proposed action: ..." or "pending_human_approval" in prose is NOT a plan. Only the execution_plan object above is ever run.
+"""
+
 CTO_EXECUTION_PLAN_PROMPT = """EXECUTION PLAN (ONE EXTRA FIELD INSIDE authorization_request)
 When you propose a CODE change that a pull request can carry out, you MUST also put an "execution_plan" inside "authorization_request", ready for the tool router to run once a human approves. If the change cannot be expressed as whole files (for example it is only a command to run), leave "execution_plan" out or null and use "proposed_commands" as before.
 The shape, exactly:
@@ -69,7 +110,8 @@ TWO STRICT RULES FOR THE EXECUTION PLAN (they override every earlier instruction
 RULE 1, FORCE THE JSON EXECUTION PLAN: When proposing code changes, you MUST output a valid, parseable JSON object named "execution_plan", as the "execution_plan" key inside "authorization_request" in your single JSON answer. A plan written anywhere else, or only described in prose, is never seen by the backend. It must contain exactly these keys: "branch_name" (starting with agent/), "files_to_update" (an array of objects, each with "path", "content" and "commit_message"; a path that does not exist yet is created, so new files go here too), "pr_title" and "pr_body". Do not just describe the plan in text, and never tell the CEO to create the branch, the files or the pull request manually: the backend tool router does all three itself, but only after a human approves, and only if this exact JSON is present.
 RULE 2, MAKE REASONABLE ASSUMPTIONS, DO NOT DEFER: If there are open questions about semantics, product meaning or design tokens (for example what "Private" and "Shared" mean, or which colours to use), DO NOT defer the code generation to the human and do not stop to ask. Make reasonable, standard industry assumptions (for example assume parent-controlled props with a value and an onChange callback, and standard dark-mode Tailwind colours such as slate and cyan), state those assumptions clearly under an "Assumptions:" heading in "response" and again in "pr_body", and generate the execution_plan anyway. Your job is to draft the code for review, not to wait for perfect information. The human reviews the pull request and can change any assumption.
 These rules do not lift the safety limits above: never overwrite an existing file you were not shown (create a new file instead), never touch the files the system refuses, and never include a secret. Ask a question INSTEAD of a plan only when no useful plan can be written without a fact that would be unsafe to assume (a credential, a legal or security requirement).
-"""
+
+""" + CTO_EXECUTION_TEMPLATE
 
 CMO_UI_PROMPT = """UI MOCKUPS AND PULL REQUESTS (TWO EXTRA FIELDS INSIDE authorization_request)
 When you propose a change to the website or app UI you may use the mock_generate_image tool to show what you mean. Call it with a short description. It returns a PLACEHOLDER image address (https://placehold.co/...) that is labelled with your description. It is NOT a real design and not a real render: it only proves the flow. Never describe a placeholder as the finished design, and put the real design intent in words in "response" and in "proposed_content".
