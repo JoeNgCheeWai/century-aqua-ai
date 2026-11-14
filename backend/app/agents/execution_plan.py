@@ -103,6 +103,43 @@ def check_path(path: Any) -> str:
     return text
 
 
+def check_path_for_read(path: Any) -> str:
+    """
+    A clean repository-relative path that may be READ, or PlanError. Used by the read-only file tool.
+
+    The same cleanliness rules as ``check_path`` (relative, no "..", no backslashes, no hidden control characters). The
+    difference is what is refused. WRITING is barred from the guardrail files (CI, governance, the tool router, the auth lock)
+    so an agent cannot rewrite its own cage; READING them is harmless and is what lets the CTO understand the system, so they
+    are allowed. What must never be read is anything that holds a SECRET (an env file, a key, credentials), and git's own
+    folder: those are refused here so a secret can never reach the model, a log or a stored answer.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise PlanError("a file has no path")
+    text = path.strip()
+    if len(text) > MAX_PATH_CHARS:
+        raise PlanError(f"path is longer than {MAX_PATH_CHARS} characters: {text[:40]}...")
+    if _CONTROL.search(text) or "\\" in text or text.startswith("/") or re.match(r"^[A-Za-z]:", text):
+        raise PlanError(f"path is not a clean relative path: {text[:60]}")
+    parts = text.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise PlanError(f"path is not a clean relative path: {text[:60]}")
+    if any(_PROTECTED_NAME.search(p) for p in parts) or parts[0].lower() == ".git":
+        raise PlanError(f"{text} may hold secrets and cannot be read")
+    return text
+
+
+REDACTED = "[REDACTED: looks like a secret]"
+
+
+def redact_secrets(text: str) -> str:
+    """``text`` with anything that looks like a key or token replaced by a marker (the same patterns the writer refuses).
+
+    Used on file text the CTO READS: an ordinary file can still contain a hard-coded key, and a model that read it could repeat
+    it into an answer that is stored in the audit log. A pattern check, not a guarantee: a secret in an unusual format is not caught.
+    """
+    return _SECRET.sub(REDACTED, text) if isinstance(text, str) else ""
+
+
 def check_content(path: str, content: Any) -> str:
     """The file text, or PlanError (not text, too big, binary, or it looks like a secret)."""
     if not isinstance(content, str):

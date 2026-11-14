@@ -537,7 +537,7 @@ The CAO's and COO's shape PLUS `authorization_request`: `response`, `reply` (sam
 
 
 ### The Authorization Workflow (code and system changes)
-**The rule: the CTO never executes anything.** It has no tools, shell, repository write access, deploy access or database access. For any request that involves changing code, configuration, the database or schema, infrastructure, deployments, access, keys or secrets, it outputs a structured `authorization_request` for a human instead of acting:
+**The rule: the CTO never executes anything.** Its only tool is the read-only `github_read_file` (Section 21); it has no shell, repository write access, deploy access or database access. For any request that involves changing code, configuration, the database or schema, infrastructure, deployments, access, keys or secrets, it outputs a structured `authorization_request` for a human instead of acting:
 
 | Field | Meaning |
 |---|---|
@@ -1046,4 +1046,21 @@ With the real model, a plan request returned unparseable JSON in 3 of 7 samples 
 - **Finding, not caused by this change:** Dr. Aqua asks for `max_tokens=1000`, and the model spends part of that on hidden reasoning, so a long answer can come back cut off or nearly empty. It was reproduced on the original prompt too (`stop_reason=max_tokens`). The script reports it as a failure. Raising Dr. Aqua's token limit is a separate, one-line decision that was not made here.
 - **Cost.** The block adds about 1,350 tokens to each executive call (about 680 for Dr. Aqua) on top of a 22 to 44 thousand character prompt, and about 90 tokens to each Boardroom turn.
 - **Warmth vs. honesty.** The block tells the agents that praise must be specific and true and that warmth never softens a safety warning, a compliance flag or a low-confidence statement. A model can still over-praise; nothing in code checks it.
+
+
+---
+
+## 21. The "super CTO": eyes (a read-only file tool) and a proactive engineer persona
+
+**Eyes.** `tools.github_read_file(file_path, branch="main")` reads ONE file from the project's own repository through `GET /repos/{owner}/{repo}/contents/{path}` with `Accept: application/vnd.github.v3.raw`, using the existing `GITHUB_PAT`. It returns the file's text, or a short string that starts with `ERROR:` (for example `ERROR: File not found: ...`). It is read-only, so it needs no authorization request. Guards, in code: the repository is fixed by the server (the tool takes no owner or repo); the path must be clean and relative; env files, keys, credentials and `.git` are refused by name (`execution_plan.check_path_for_read`), and anything that looks like a key or token inside an ordinary file is replaced by a marker before the model sees it (a pattern check, so an unusual secret format is not caught); a folder, a binary file or a file over 60 KB is reported or cut off and marked. Reading the guardrail files (CI, governance, the tool router) is allowed because only WRITING them is dangerous, and the write rule is unchanged.
+
+**Wired into the CTO only.** `cto_agent._create_with_reader` offers the CTO exactly this one tool, as the CMO is offered `generate_image`. It is bounded: at most 6 reads and 6 tool rounds per answer, then one last call with tools switched off. The model's choice of branch is ignored: it always reads `main`, because a change is made from `main`. A cross-check review (`get_cto_answer`) gets no tools, as before. Every CTO answer starts with a `CTO tools available: [...]` log line.
+
+**The Golden Rule is enforced in code, not only asked for.** `_enforce_read_before_write` drops the whole `execution_plan` if it would overwrite an EXISTING file the CTO did not read in full during that answer. A new file needs no read. A file whose existence could not be checked fails closed (the plan is dropped), a file that was cut off for being too long does not count as read, and a failed read does not count. The rest of the request (the explanation and diff text) stands, and a finding says which file and why. The tests prove the check bites: with it deliberately disabled, 8 of 16 failed.
+
+**Persona.** `persona.CTO_ENGINEER_PROMPT`, placed after the shared voice block and before the CTO's old role text, asks the CTO to anticipate intent, push back gently on technical debt, slow performance or architecture damage with 1 or 2 better alternatives and a plain analogy, praise a genuinely good idea specifically, and read before it modifies. The conversation goes inside the existing JSON `response` and `chat_reply` fields, because JSON is the only thing the system parses; the code change stays only in `authorization_request.execution_plan`. The old line "You have NO tools" was corrected, and every other prohibition (no write, deploy, run or change) is unchanged.
+
+**What this does NOT change.** The authorization workflow, the strict `execution_plan` schema, approval (still a pull request that is never merged), the protected-file write rules, the constitution, or any other agent.
+
+**Limits.** (1) The tool is read-only but it does reach GitHub with the shared `GITHUB_PAT`, so that token's read scope matters. (2) The read-before-write check proves the CTO READ a file, not that it understood it; the pull request diff is still the real check. (3) Reading only ever uses `main`; a plan is applied to a branch made from `main`, so if `main` moves between the read and the approval, the plan can overwrite newer changes (the pull request diff would show it). (4) Persona and pushback are model behaviour: `backend/scripts/try_super_cto.py` (a few cents) spot-checks one run each of modify, push-back and new-file, and passed all 19 checks on this branch, but that is one run each, not a measured rate. (5) Each read adds latency and tokens; a long CTO answer can now take several model calls.
 
