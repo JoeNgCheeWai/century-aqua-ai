@@ -3,10 +3,8 @@
 import { useState } from "react";
 import { Code, List, RiskBadge, SectionTitle } from "@/components/mc/ui";
 import ExecutionResult from "@/components/mc/ExecutionResult";
+import MockupGallery from "@/components/mc/MockupGallery";
 import type { AuthorizationRequest } from "@/lib/mc-types";
-
-/** A labelled placehold.co address: what the image tool returns when it could not generate a picture. */
-const isPlaceholderMockup = (url: string) => url.startsWith("https://placehold.co/");
 
 /**
  * One authorization request (Phase 6.5: plain language first). A non-technical decision-maker sees, in this order: what is
@@ -22,10 +20,13 @@ export default function AuthorizationDetail({
   request,
   agentId,
   startOpen = false,
+  showMockups = true,
 }: {
   request: AuthorizationRequest;
   agentId: string;
   startOpen?: boolean;
+  /** False where the same pictures are already shown elsewhere (the chat puts them at the top of the answer). */
+  showMockups?: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
   const commands = request.proposed_commands?.length ? request.proposed_commands : request.deployment_commands ?? [];
@@ -80,31 +81,7 @@ export default function AuthorizationDetail({
         </div>
       )}
 
-      {(request.mockup_urls?.length ?? 0) > 0 && (
-        <div>
-          <SectionTitle>AI-generated mockup (a draft to judge, not a finished design)</SectionTitle>
-          <div className="flex flex-wrap gap-3">
-            {request.mockup_urls?.map((url) => {
-              const placeholder = isPlaceholderMockup(url);
-              return (
-                <figure key={url} className="m-0">
-                  {/* A plain <img>: the picture lives on Vercel Blob (or is a placehold.co placeholder), not on this site. The backend
-                      only passes on addresses the image tool itself returned, so nothing here chooses which host to load. */}
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={url}
-                    alt={placeholder ? "Placeholder: an image could not be generated" : "AI-generated mockup"}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    className="h-28 w-auto rounded-lg border border-slate-700"
-                  />
-                  {placeholder && <figcaption className="mt-1 text-xs text-amber-300">Placeholder: no image could be generated</figcaption>}
-                </figure>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {showMockups && <MockupGallery urls={request.mockup_urls ?? []} />}
 
       {plan && (
         <div className="rounded-lg border border-blue-400/30 bg-blue-500/5 p-3">
