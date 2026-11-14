@@ -1,32 +1,23 @@
 """
-A real image generator for the CMO's mockups (OpenAI Images API), with a safe fall-back to the placeholder.
+The CMO's image tool: generate a mockup with the OpenAI Images API, store it in Vercel Blob, return its public https URL.
 
-NOT WIRED INTO ANY AGENT YET. Nothing imports this module except its tests and scripts/try_image_tool.py. It is deliberately
-NOT in ``tools.TOOLS`` and not in tools.py: that file is the audited, protected tool router and its tests pin its exact tool
-list. Wiring this into the CMO (the prompt, the ``mockup_urls`` validator in cmo_authorization.py, the approval screen) is a
-separate step. See "WHAT WIRING IT IN WILL NEED" below.
-
-    generate_image(prompt)           -> str          a ``data:image/...;base64,...`` URI, or the placeholder URL
+    generate_image(prompt)           -> str          the Vercel Blob URL of the picture, or the placeholder URL
     generate_image_detailed(prompt)  -> ImageResult  the same, plus whether it is real and why it was not
+    IMAGE_TOOL_SPEC / tool_result_text(...)          how the CMO is offered the tool and told what it returned
 
-WHICH MODEL. DALL-E 3 was shut down on May 12, 2026, so this uses a GPT Image model. The default is ``gpt-image-1-mini`` and
-OPENAI_IMAGE_MODEL changes it. These models return the picture as base64, never as a hosted URL (``response_format`` is not
-accepted for them, so it is not sent). That is why the result is a data: URI: a browser ``<img src>`` renders it with no
-storage and no second request.
+THE FLOW, in order, and it stops at the first thing that is missing or fails:
+  1. a prompt, OPENAI_API_KEY and BLOB_READ_WRITE_TOKEN must all be present. The Blob token is checked BEFORE the image is
+     generated, so the app never pays for a picture it has nowhere to store;
+  2. POST /v1/images/generations (default model gpt-image-1-mini, OPENAI_IMAGE_MODEL changes it). DALL-E 3 was shut down on
+     May 12, 2026, and the GPT Image models answer with base64, never a hosted link, so the bytes come back to us;
+  3. the bytes are checked to really be a PNG, JPEG or WebP, then uploaded to a PUBLIC Vercel Blob store (vercel-blob);
+  4. the URL Blob returns is checked (https, on blob.vercel-storage.com) and returned.
 
-NEVER RAISES, NEVER CRASHES THE APP. A missing key, an empty prompt, a network error, a timeout, an API error or a reply that
-is not an image all log ONE warning (the reason only) and return ``tools.mock_generate_image(prompt)``. Nothing is retried: an
-image costs money, so a failure is reported, not repeated. The key is read at call time, sent only in the Authorization header,
-and never logged or returned. Neither is the prompt, nor the API's error text (which can echo the prompt back).
+NEVER RAISES, NEVER CRASHES THE APP. Any failure logs ONE warning (the reason only) and returns the labelled placeholder
+(``tools.mock_generate_image``). Nothing is retried: an image costs money, so a failure is reported, not repeated. Neither the
+OpenAI key nor the Blob token is ever logged or returned, and neither are the prompt or the vendors' error text.
 
-WHAT WIRING IT IN WILL NEED (not done here, on purpose):
-  * A data: URI is large (a 1024x1024 PNG is roughly 1-2 MB of text). cmo_authorization.clean_mockup_urls accepts only
-    https://placehold.co/ addresses up to 300 characters, so it would drop it. The authorization JSON is stored in Postgres,
-    and the frontend renders ``mockup_urls`` directly, so a data: URI there bloats every audit row. The plan is to upload the
-    image to S3 or Cloudinary and keep only that short https URL in the request.
-  * Anything that is not a placeholder must stop being labelled "placeholder, not a real design" (chat_style.CMO_UI_PROMPT,
-    cmo_authorization.audit_summary, AuthorizationDetail.tsx). A generated image is a draft for a human to judge, not a
-    finished design, and not approved brand material.
+BLOCKING. Both vendor calls are synchronous. Async callers (the CMO) run this in a worker thread (asyncio.to_thread).
 """
 
 from __future__ import annotations
@@ -35,8 +26,10 @@ import base64
 import binascii
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -47,16 +40,21 @@ logger = logging.getLogger(__name__)
 IMAGES_URL = "https://api.openai.com/v1/images/generations"
 DEFAULT_IMAGE_MODEL = "gpt-image-1-mini"
 IMAGE_SIZE = "1024x1024"
-IMAGE_QUALITY = "low"  # the cheapest tier: this is a mockup for a human to look at, not a final asset
-TIMEOUT_SECONDS = 120  # image generation is slow (tens of seconds is normal)
+IMAGE_QUALITY = "low"  # the cheapest tier: a mockup for a human to look at, not a final asset
+TIMEOUT_SECONDS = 60  # a live call took about 8 seconds; the CMO may make 2 calls inside the console's 170-second limit
 MAX_PROMPT_CHARS = 1000
 USER_AGENT = "century-aqua-ai-image-tool"
+
+BLOB_TOKEN_ENV = "BLOB_READ_WRITE_TOKEN"
+BLOB_HOST_SUFFIX = ".blob.vercel-storage.com"
+BLOB_FOLDER = "cmo-mockups"
+_EXTENSIONS = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 
 
 @dataclass(frozen=True)
 class ImageResult:
-    url: str  # a data: URI (generated) or a placehold.co URL (fallback)
-    generated: bool  # True only when the OpenAI API produced the picture
+    url: str  # the Vercel Blob https URL (generated) or a placehold.co URL (fallback)
+    generated: bool  # True only when OpenAI made the picture AND it is stored in Vercel Blob
     reason: str = ""  # why it fell back, in a few safe words (empty when generated)
     model: str = ""  # the model that made it (empty for the placeholder)
 
@@ -64,6 +62,19 @@ class ImageResult:
 def image_model() -> str:
     """The model to use, read at call time so a deploy-time change takes effect."""
     return os.getenv("OPENAI_IMAGE_MODEL", "").strip() or DEFAULT_IMAGE_MODEL
+
+
+def is_blob_url(value: Any) -> bool:
+    """True for a plain https address on Vercel Blob's host (no credentials, no odd port, no spaces)."""
+    if not isinstance(value, str) or " " in value or len(value) > 300:
+        return False
+    try:
+        parsed = urlparse(value)
+        host = parsed.hostname or ""
+        return (parsed.scheme == "https" and host.endswith(BLOB_HOST_SUFFIX) and len(host) > len(BLOB_HOST_SUFFIX)
+                and parsed.username is None and parsed.password is None and parsed.port in (None, 443))
+    except ValueError:
+        return False
 
 
 def _sniff_mime(data: bytes) -> str | None:
@@ -82,35 +93,48 @@ def _fallback(prompt: Any, reason: str) -> ImageResult:
     return ImageResult(mock_generate_image(prompt if isinstance(prompt, str) else ""), False, reason)
 
 
-def _picture_from(item: Any, model: str) -> ImageResult | str:
-    """The ImageResult for one ``data`` entry of the API reply, or a short reason it is unusable."""
-    if not isinstance(item, dict):
-        return "the reply had no image entry"
-    encoded = item.get("b64_json")
-    if isinstance(encoded, str) and encoded.strip():
-        try:
-            raw = base64.b64decode(encoded.strip(), validate=True)
-        except (binascii.Error, ValueError):
-            return "the image data was not valid base64"
-        mime = _sniff_mime(raw)
-        if mime is None:
-            return "the image data was not a PNG, JPEG or WebP picture"
-        return ImageResult(f"data:{mime};base64,{encoded.strip()}", True, "", model)
-    link = item.get("url")
-    # Older image models answered with a hosted link. Only a plain https address is passed on.
-    if isinstance(link, str) and link.startswith("https://") and " " not in link:
-        return ImageResult(link, True, "", model)
-    return "the reply held neither image data nor an https link"
+def _decode_picture(item: Any) -> tuple[bytes, str] | str:
+    """(image bytes, mime type) from one ``data`` entry of the API reply, or a short reason it is unusable."""
+    encoded = item.get("b64_json") if isinstance(item, dict) else None
+    if not isinstance(encoded, str) or not encoded.strip():
+        return "the reply held no image data"
+    try:
+        raw = base64.b64decode(encoded.strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return "the image data was not valid base64"
+    mime = _sniff_mime(raw)
+    return (raw, mime) if mime else "the image data was not a PNG, JPEG or WebP picture"
+
+
+def _upload(raw: bytes, mime: str) -> str:
+    """Store the picture in the public Vercel Blob store. Returns its https URL, or a reason that starts with 'FAIL:'."""
+    try:
+        from vercel.blob import sync as vercel_blob  # imported here so the backend starts even without the package
+    except ImportError:
+        return "FAIL:the vercel-blob package is not installed"
+    pathname = f"{BLOB_FOLDER}/{uuid.uuid4().hex}.{_EXTENSIONS[mime]}"
+    try:
+        # The SDK reads BLOB_READ_WRITE_TOKEN itself. The store must be PUBLIC, or the upload is refused and we fall back.
+        stored = vercel_blob.put_blob(pathname, raw, access="public", content_type=mime, add_random_suffix=True)
+    except Exception as exc:  # BlobError subclasses, network errors, a bad token: log the type only
+        return f"FAIL:the upload to Vercel Blob failed ({type(exc).__name__})"
+    url = getattr(stored, "url", None)
+    if not is_blob_url(url):
+        return "FAIL:Vercel Blob did not return a usable https address"
+    return url
 
 
 def generate_image_detailed(prompt: str) -> ImageResult:
-    """Generate one image for ``prompt``. Falls back to the placeholder on ANY problem. Never raises."""
+    """Generate one image for ``prompt``, store it in Vercel Blob, return its URL. Falls back to the placeholder on ANY problem."""
     try:
         if not isinstance(prompt, str) or not prompt.strip():
             return _fallback(prompt, "the prompt was empty")
         key = os.getenv("OPENAI_API_KEY", "").strip()
         if not key:
             return _fallback(prompt, "OPENAI_API_KEY is not set")
+        if not os.getenv(BLOB_TOKEN_ENV, "").strip():
+            # Checked BEFORE generating: an image with nowhere to be stored would be paid for and thrown away.
+            return _fallback(prompt, f"{BLOB_TOKEN_ENV} is not set")
 
         model = image_model()
         body = {"model": model, "prompt": prompt.strip()[:MAX_PROMPT_CHARS], "n": 1, "size": IMAGE_SIZE, "quality": IMAGE_QUALITY}
@@ -123,7 +147,7 @@ def generate_image_detailed(prompt: str) -> ImageResult:
             return _fallback(prompt, f"could not reach OpenAI ({type(exc).__name__})")
 
         if response.status_code != 200:
-            # Only the status code: the error body can echo the prompt back, and must never carry anything secret into a log.
+            # Only the status code: the error body can echo the prompt back.
             return _fallback(prompt, f"OpenAI answered HTTP {response.status_code}")
         try:
             payload = response.json()
@@ -132,14 +156,51 @@ def generate_image_detailed(prompt: str) -> ImageResult:
         items = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(items, list) or not items:
             return _fallback(prompt, "OpenAI's reply held no image")
-        picture = _picture_from(items[0], model)
-        if isinstance(picture, str):
-            return _fallback(prompt, picture)
-        return picture
+        decoded = _decode_picture(items[0])
+        if isinstance(decoded, str):
+            return _fallback(prompt, decoded)
+
+        stored = _upload(*decoded)
+        if stored.startswith("FAIL:"):
+            return _fallback(prompt, stored[len("FAIL:"):])
+        return ImageResult(stored, True, "", model)
     except Exception as exc:  # a tool must never take the app down
         return _fallback(prompt, f"unexpected error ({type(exc).__name__})")
 
 
 def generate_image(prompt: str) -> str:
-    """The image for ``prompt`` as a ``data:image/...;base64,...`` URI, or the placeholder URL if it cannot be generated."""
+    """The Vercel Blob https URL of a generated image for ``prompt``, or the placeholder URL if it cannot be made and stored."""
     return generate_image_detailed(prompt).url
+
+
+# ------------------------------------------------------------------------------------------------ offered to the CMO
+# The shape Anthropic's Messages API takes for a tool. The CMO is offered ONLY this tool.
+IMAGE_TOOL_NAME = "generate_image"
+IMAGE_TOOL_SPEC: dict[str, Any] = {
+    "name": IMAGE_TOOL_NAME,
+    "description": (
+        "Generate one AI mockup image from a short visual description and get back its web address. Use it when asked for a "
+        "mockup of a page, banner or visual. It costs money, so call it only when a picture is wanted, once per distinct "
+        "image. The result is an AI-generated draft for a human to judge, not a finished design."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "description": "What the image shows: the subject, setting, composition, colours and style. Do not include text to be drawn in the image, a real person's name, or any secret.",
+            }
+        },
+        "required": ["prompt"],
+    },
+}
+
+
+def tool_result_text(result: ImageResult) -> str:
+    """What the CMO is told the tool returned. It carries the address to use as a mockup and says honestly if it is a placeholder."""
+    if result.generated:
+        return f"Image generated. Use exactly this address in mockup_urls: {result.url}"
+    return (
+        f"No image could be generated ({result.reason}). This is a labelled placeholder, NOT the requested image: "
+        f"{result.url}. You may list it in mockup_urls but you must say it is a placeholder."
+    )

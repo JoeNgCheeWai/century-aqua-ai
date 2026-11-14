@@ -48,7 +48,7 @@ export interface AuthorizationRequest {
   deployment_commands?: string[];
   rollback_plan?: string | null;
   claims_to_verify?: string[];
-  /** Phase 6.6: placeholder images (placehold.co) from the CMO's mock_generate_image tool. */
+  /** AI-generated mockups the CMO's generate_image tool stored in Vercel Blob (https://...blob.vercel-storage.com/...), or labelled placehold.co placeholders when an image could not be generated. */
   mockup_urls?: string[];
   execution_plan?: ExecutionPlan | null;
   /** Written by the backend after approval when there was a plan. Absent before. */

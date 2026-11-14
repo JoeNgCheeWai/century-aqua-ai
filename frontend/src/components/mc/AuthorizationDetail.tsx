@@ -5,6 +5,9 @@ import { Code, List, RiskBadge, SectionTitle } from "@/components/mc/ui";
 import ExecutionResult from "@/components/mc/ExecutionResult";
 import type { AuthorizationRequest } from "@/lib/mc-types";
 
+/** A labelled placehold.co address: what the image tool returns when it could not generate a picture. */
+const isPlaceholderMockup = (url: string) => url.startsWith("https://placehold.co/");
+
 /**
  * One authorization request (Phase 6.5: plain language first). A non-technical decision-maker sees, in this order: what is
  * being asked and how risky it is, the plain-language summary (problem, what it solves, the risk), the impact, and any
@@ -79,13 +82,26 @@ export default function AuthorizationDetail({
 
       {(request.mockup_urls?.length ?? 0) > 0 && (
         <div>
-          <SectionTitle>Mockups (placeholder images, not real designs)</SectionTitle>
+          <SectionTitle>AI-generated mockup (a draft to judge, not a finished design)</SectionTitle>
           <div className="flex flex-wrap gap-3">
-            {request.mockup_urls?.map((url) => (
-              // A plain <img>: these are small external placeholders, and the backend only accepts the placehold.co host.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img key={url} src={url} alt="Placeholder mockup" loading="lazy" className="h-28 w-auto rounded-lg border border-slate-700" />
-            ))}
+            {request.mockup_urls?.map((url) => {
+              const placeholder = isPlaceholderMockup(url);
+              return (
+                <figure key={url} className="m-0">
+                  {/* A plain <img>: the picture lives on Vercel Blob (or is a placehold.co placeholder), not on this site. The backend
+                      only passes on addresses the image tool itself returned, so nothing here chooses which host to load. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={url}
+                    alt={placeholder ? "Placeholder: an image could not be generated" : "AI-generated mockup"}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    className="h-28 w-auto rounded-lg border border-slate-700"
+                  />
+                  {placeholder && <figcaption className="mt-1 text-xs text-amber-300">Placeholder: no image could be generated</figcaption>}
+                </figure>
+              );
+            })}
           </div>
         </div>
       )}

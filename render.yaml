@@ -67,7 +67,13 @@ services:
       - key: PINECONE_INDEX
         sync: false          # index name (dimension 1536, cosine)
       - key: OPENAI_API_KEY
-        sync: false          # secret; used only for text-embedding-3-small
+        sync: false          # secret; text-embedding-3-small (CAO knowledge base) and the CMO's image generation
+      # The CMO's generate_image tool: the GPT Image model (default gpt-image-1-mini) and the Vercel Blob store the pictures go to.
+      # Without OPENAI_API_KEY or BLOB_READ_WRITE_TOKEN the tool falls back to a labelled placeholder image. Backend only.
+      - key: OPENAI_IMAGE_MODEL
+        sync: false          # optional; leave unset for the default
+      - key: BLOB_READ_WRITE_TOKEN
+        sync: false          # secret; read-write token of a PUBLIC Vercel Blob store (pictures are viewed by a plain address)
       - key: ALLOWED_ORIGINS
         sync: false          # your Vercel production URL(s), comma-separated
       - key: ALLOWED_ORIGIN_REGEX

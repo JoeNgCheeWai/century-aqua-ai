@@ -12,7 +12,9 @@ Phase 4 of the AI Executive Team. It is built on exactly the same foundations as
     in AgentAuditLog.
 
 What is different is the role (four pillars, prompts/cmo_prompt.py) and the AUTHORIZATION WORKFLOW for
-MARKETING: the CMO has no tools and never publishes, sends, schedules, launches or changes anything public.
+MARKETING: the CMO never publishes, sends, schedules, launches or changes anything public. Its ONLY tool is
+generate_image (app/agents/image_tool.py): it makes an AI mockup, stores it in Vercel Blob and returns the address. That
+reaches no social, email, ad, website or CMS system, and the picture is a draft for a human to judge.
 It may draft freely. A request involving publishing produces a structured ``authorization_request`` that waits
 for a human (app/agents/cmo_authorization.py), stored whole in AgentAuditLog.authorizationRequest (the column
 added for the CTO). Its status is forced to "pending_human_approval" in code, its risk level has a floor set by
@@ -21,12 +23,14 @@ the text, and factual claims found in the draft are listed for a human to substa
 This module deliberately does not change cao_agent.py, coo_agent.py or cto_agent.py: all are live in production.
 """
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
+from app.agents import image_tool
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -117,6 +121,56 @@ async def _build_system_prompt(query: str, use_rag: bool) -> tuple[str, list]:
     return system, result.sources
 
 
+MAX_IMAGES_PER_ANSWER = 2  # each image costs money and the console gives one answer 170 seconds
+MAX_TOOL_ROUNDS = 3  # a hard stop on the model-calls-tool loop, whatever the model asks for
+
+
+async def _create_with_image_tool(client, *, model: str, system: str, messages: list[dict]):
+    """
+    ONE answer, with the image tool on offer. Returns (the final response, the set of Vercel Blob addresses the tool returned).
+
+    The loop is bounded three ways: at most MAX_IMAGES_PER_ANSWER real images (a further request gets an error result, so
+    the model carries on without one), at most MAX_TOOL_ROUNDS rounds, and a last call with tool use switched off if the model
+    is still asking. The tool blocks (vendor HTTP calls), so it runs in a worker thread. It never raises.
+    """
+    common = {"model": model, "max_tokens": CMO_MAX_TOKENS, "system": system, "tools": [image_tool.IMAGE_TOOL_SPEC]}
+    convo = list(messages)
+    produced: set[str] = set()
+    made = 0
+    response = await client.messages.create(messages=convo, **common)
+    for _ in range(MAX_TOOL_ROUNDS):
+        if response.stop_reason != "tool_use":
+            return response, produced
+        results = []
+        for block in response.content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            prompt = (getattr(block, "input", None) or {}).get("prompt") if isinstance(getattr(block, "input", None), dict) else None
+            if getattr(block, "name", None) != image_tool.IMAGE_TOOL_NAME:
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True, "content": "Unknown tool. Only generate_image exists."})
+            elif made >= MAX_IMAGES_PER_ANSWER:
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
+                                "content": f"Image limit reached ({MAX_IMAGES_PER_ANSWER} per answer). Carry on without another image."})
+            else:
+                made += 1
+                result = await asyncio.to_thread(image_tool.generate_image_detailed, prompt)
+                if result.generated:
+                    produced.add(result.url)
+                results.append({"type": "tool_result", "tool_use_id": block.id, "content": image_tool.tool_result_text(result)})
+        if not results:
+            return response, produced
+        convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": results}]
+        response = await client.messages.create(messages=convo, **common)
+    if response.stop_reason == "tool_use":
+        # Still asking after the last round: one more call with tools switched off so the model must write its answer.
+        # Every pending tool_use needs a result, so each is answered with an error.
+        pending = [{"type": "tool_result", "tool_use_id": b.id, "is_error": True, "content": "Tool limit reached. Write your final answer now."}
+                   for b in response.content if getattr(b, "type", None) == "tool_use"]
+        convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": pending}]
+        response = await client.messages.create(messages=convo, tool_choice={"type": "none"}, **common)
+    return response, produced
+
+
 @dataclass
 class CMOResult:
     """The CMO's answer plus the governance facts about it. The CAO's fields plus authorization_request."""
@@ -157,6 +211,7 @@ async def get_cmo_result(
     audit: bool = True,
     user_id: str = "unknown",
     model_tier: str | None = None,
+    images: bool = True,
 ) -> CMOResult:
     """
     Generate an AI_CMO response and record it for accountability.
@@ -196,12 +251,16 @@ async def get_cmo_result(
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, CMO_MODEL)
-    response = await _get_client().messages.create(
-        model=model_id,
-        max_tokens=CMO_MAX_TOKENS,
-        system=system,
-        messages=messages,
-    )
+    produced_images: set[str] = set()
+    if images:
+        response, produced_images = await _create_with_image_tool(_get_client(), model=model_id, system=system, messages=messages)
+    else:  # a review of another executive's recommendation: no tools, exactly as before
+        response = await _get_client().messages.create(
+            model=model_id,
+            max_tokens=CMO_MAX_TOKENS,
+            system=system,
+            messages=messages,
+        )
 
     raw = "".join(block.text for block in response.content if block.type == "text")
     parsed = parse_cao_output(raw)
@@ -212,7 +271,8 @@ async def get_cmo_result(
     authorization_request = None
     data = load_json_object(raw) if parsed.structured else None
     if data is not None:
-        authorization_request, auth_findings = normalize_authorization_request(data.get("authorization_request"))
+        # Only the Blob addresses the image tool returned during THIS answer survive in mockup_urls (see cmo_authorization).
+        authorization_request, auth_findings = normalize_authorization_request(data.get("authorization_request"), produced_images)
         format_findings.extend(auth_findings)
     if format_findings:
         logger.warning("CMO output format: %s", "; ".join(format_findings))
@@ -290,5 +350,5 @@ async def get_cmo_answer(
     (cross_validation.cross_check) can ask the CMO to review another agent's recommendation for brand, message
     and reputational risk. See get_cmo_result for the governance details.
     """
-    return (await get_cmo_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id)).reply
+    return (await get_cmo_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id, images=False)).reply
 

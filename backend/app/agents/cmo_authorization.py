@@ -51,6 +51,7 @@ from typing import Any
 from app.agents.cto_authorization import RISK_LEVELS, STATUS_PENDING
 from app.agents.execution_plan import describe as describe_plan
 from app.agents.execution_plan import higher_risk, normalize_execution_plan, plan_risk_floor, plan_text
+from app.agents.image_tool import is_blob_url
 from app.agents.plain_summary import normalize_plain_summary
 
 MOCKUP_PREFIX = "https://placehold.co/"
@@ -168,24 +169,38 @@ def _string_list(value: Any, *, max_items: int, limit: int) -> list[str]:
 MAX_MOCKUPS = 4
 
 
-def clean_mockup_urls(value: Any) -> tuple[list[str], list[str]]:
+def is_placeholder_url(value: Any) -> bool:
+    """True for a labelled placeholder from mock_generate_image (the fall-back when an image could not be generated)."""
+    return isinstance(value, str) and value.startswith(MOCKUP_PREFIX) and " " not in value and len(value) <= 300
+
+
+def clean_mockup_urls(value: Any, allowed_blob_urls: set[str] | None = None) -> tuple[list[str], list[str]]:
     """
-    Mockup image URLs from the CMO. ONLY the placeholder host that mock_generate_image uses is accepted: the CMO has no real
-    image generator yet, so any other address would be an invented link, and a link to an arbitrary site does not belong in
-    an approval screen. Anything else is dropped (with a finding), and the rest of the request is unaffected.
+    Mockup image URLs from the CMO. Two kinds are accepted, and nothing else:
+      * a Vercel Blob address (https, on blob.vercel-storage.com): an AI-generated mockup stored by the image tool;
+      * a labelled placeholder (https://placehold.co/...): what the tool returns when it could not generate an image.
+    The approval screen loads each address straight into an <img>, so an arbitrary link does not belong here: a model-written
+    address would make the reviewer's browser fetch a site the model chose. Anything else is dropped (with a finding), and the
+    rest of the request is unaffected.
+
+    ``allowed_blob_urls`` is the set of Blob addresses the image tool really returned while writing THIS answer. When it is
+    given, a Blob address outside it is dropped too: the model cannot invent an address on Blob's host, or point at someone
+    else's store. When it is None (no tool ran) no Blob address is kept.
     """
     if value is None:
         return [], []
     items = value if isinstance(value, (list, tuple)) else [value]
+    produced = allowed_blob_urls or set()
     kept: list[str] = []
     dropped = 0
     for item in items:
-        if isinstance(item, str) and item.strip().startswith(MOCKUP_PREFIX) and " " not in item.strip() and len(item.strip()) <= 300:
-            if item.strip() not in kept:
-                kept.append(item.strip())
+        url = item.strip() if isinstance(item, str) else None
+        if url and (is_placeholder_url(url) or (is_blob_url(url) and url in produced)):
+            if url not in kept:
+                kept.append(url)
         else:
             dropped += 1
-    findings = [f"{dropped} mockup URL(s) dropped (only {MOCKUP_PREFIX}... placeholder images are accepted)"] if dropped else []
+    findings = [f"{dropped} mockup URL(s) dropped (only images made by the image tool, or its placeholders, are accepted)"] if dropped else []
     return kept[:MAX_MOCKUPS], findings
 
 
@@ -196,12 +211,15 @@ def _risk(value: Any) -> str | None:
     return None
 
 
-def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, list[str]]:
+def normalize_authorization_request(raw: Any, allowed_blob_urls: set[str] | None = None) -> tuple[dict[str, Any] | None, list[str]]:
     """
     Validate the model's ``authorization_request`` for a marketing action. Returns (request or None, findings).
 
     None means "no request": the model sent null (a drafting or advice answer with nothing to publish), or
     sent something with nothing to review. ``findings`` explains the second case. Never raises.
+
+    ``allowed_blob_urls``: the Vercel Blob addresses the image tool returned while this answer was written (see
+    clean_mockup_urls). Without it, only labelled placeholders survive in ``mockup_urls``.
     """
     if raw is None:
         return None, []
@@ -217,7 +235,7 @@ def normalize_authorization_request(raw: Any) -> tuple[dict[str, Any] | None, li
 
     # Phase 6.6: an optional execution_plan (a pull request that edits the site's UI files) and optional mockup images.
     plan, plan_findings = normalize_execution_plan(raw.get("execution_plan"))
-    mockups, mockup_findings = clean_mockup_urls(raw.get("mockup_urls"))
+    mockups, mockup_findings = clean_mockup_urls(raw.get("mockup_urls"), allowed_blob_urls)
 
     if not summary:
         return None, ["authorization_request had no action_summary; dropped"]
@@ -294,7 +312,11 @@ def audit_summary(request: dict[str, Any] | None) -> str:
     if request.get("proposed_content"):
         lines.append("- Proposed content: included in the structured authorization_request.")
     if request.get("mockup_urls"):
-        lines.append(f"- Mockup images (placeholders, not real designs): {len(request['mockup_urls'])}")
+        urls = request["mockup_urls"]
+        placeholders = sum(1 for u in urls if is_placeholder_url(u))
+        lines.append(f"- AI-generated mockups (drafts for a human to judge, not finished designs): {len(urls) - placeholders}")
+        if placeholders:
+            lines.append(f"- Placeholder images (an image could not be generated): {placeholders}")
     if request.get("execution_plan"):
         lines.append("- " + describe_plan(request["execution_plan"]))
     if request.get("rollback_plan"):
