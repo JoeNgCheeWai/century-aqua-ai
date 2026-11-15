@@ -227,7 +227,7 @@ def _salvage_response(raw: str) -> str | None:
     return text.strip() or None
 
 
-def parse_cao_output(raw: str) -> ParsedAnswer:
+def parse_cao_output(raw: str, chat_reply_chars: int = MAX_CHAT_REPLY_CHARS) -> ParsedAnswer:
     """Validate the model's raw text. Never raises; see the module docstring for the fallback rules."""
     data = _load_json_object(raw)
     response = data.get("response") if data else None
@@ -261,7 +261,7 @@ def parse_cao_output(raw: str) -> ParsedAnswer:
         pre_consultation_requests=normalize_pre_consultation(data.get("pre_consultation_requests")),
         structured=True,
         # Optional and never a format problem when absent: older prompts and cross-validation verdicts have none.
-        chat_reply=_text(data.get("chat_reply"), MAX_CHAT_REPLY_CHARS) or None,
+        chat_reply=_text(data.get("chat_reply"), chat_reply_chars) or None,
         findings=findings,
     )
 

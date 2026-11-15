@@ -37,7 +37,7 @@ from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
-from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
+from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CTO_CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
 from app.prompts.persona import CTO_ENGINEER_PROMPT, persona_block, thinking_process
 
@@ -49,7 +49,7 @@ AGENT_ID = "cto"
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution). The
 # authorization workflow, the execution_plan template and the JSON format below are unchanged.
 CTO_ROLE_PROMPT = (
-    persona_block("cto") + "\n\n" + CTO_ENGINEER_PROMPT + "\n\n" + thinking_process("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    persona_block("cto") + "\n\n" + CTO_ENGINEER_PROMPT + "\n\n" + thinking_process("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CTO_CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CTO_EXECUTION_PLAN_PROMPT
 )
 
@@ -61,6 +61,22 @@ CTO_MODEL = os.getenv("CTO_MODEL", "claude-sonnet-5-5")
 # One answer carries the recommendation, the reasoning chain, three scenarios and possibly an
 # authorization_request with a code diff. The COO needed 16384 with a realistic plan (its JSON was cut
 # off at 8192), and a diff makes the CTO's answer longer still, so it starts at the same budget.
+# The CTO explains with headings, numbered steps and analogies (persona.CTO_ENGINEER_PROMPT), so its chat_reply may be much longer than the
+# 1200 characters the other three executives keep. Still bounded: a runaway reply is cut here, in code.
+CTO_MAX_CHAT_REPLY_CHARS = 5000
+# Added by code, not by the model, when the read-before-write rule dropped a plan the model had drafted.
+PLAN_DROPPED_NOTE = (
+    "**One important correction:** the execution plan I drafted could not be prepared for your approval, because it would have "
+    "replaced a file I had not read first. Nothing is waiting for you to approve. Ask me again, and I will read the file first and "
+    "prepare the plan properly."
+)
+# The same truth when a request is STILL waiting on the Authorizations page (it had a code outline or commands besides the plan): only
+# the part that would open a pull request is gone, so "nothing is waiting" would be false there.
+PLAN_DROPPED_NOTE_REQUEST_KEPT = (
+    "**One important correction:** the execution plan I drafted could not be prepared, because it would have replaced a file I had "
+    "not read first. A request is still waiting on the Authorizations page, but approving it will NOT open a pull request. Ask me "
+    "again, and I will read the file first and prepare the plan properly."
+)
 DEFAULT_CTO_MAX_TOKENS = 16384
 
 
@@ -310,12 +326,13 @@ async def get_cto_result(
         )
 
     raw = "".join(block.text for block in response.content if block.type == "text")
-    parsed = parse_cao_output(raw)
+    parsed = parse_cao_output(raw, chat_reply_chars=CTO_MAX_CHAT_REPLY_CHARS)
     format_findings = list(parsed.findings)
 
     # The authorization_request is read from the same JSON object, but only when the object parsed as a
     # whole. A truncated or invalid object yields no request (never a half-built one).
     authorization_request = None
+    plan_dropped = False
     data = load_json_object(raw) if parsed.structured else None
     if data is not None:
         authorization_request, auth_findings = normalize_authorization_request(data.get("authorization_request"))
@@ -323,6 +340,7 @@ async def get_cto_result(
         # The Golden Rule, in code: a plan may only overwrite an existing file the CTO read in full during THIS answer.
         authorization_request, read_findings = await _enforce_read_before_write(authorization_request, files_read)
         format_findings.extend(read_findings)
+        plan_dropped = bool(read_findings)
     if format_findings:
         logger.warning("CTO output format: %s", "; ".join(format_findings))
 
@@ -334,6 +352,17 @@ async def get_cto_result(
     score = score_response(model_text)
 
     text = parsed.response
+    chat_text = parsed.chat_reply
+    if plan_dropped:
+        # The model may have told the CEO a plan is ready, but code dropped it (it would overwrite a file that was not read first). The
+        # friendly wording must never promise something that no longer exists, so code adds the truth, in the same friendly voice.
+        # The correction goes FIRST, so the CEO reads the truth before the model's own words, which may say "I have prepared the plan".
+        note = PLAN_DROPPED_NOTE_REQUEST_KEPT if authorization_request is not None else PLAN_DROPPED_NOTE
+        text = note + "\n\n" + text
+        if chat_text and chat_text.strip():
+            chat_text = note + "\n\n" + chat_text.lstrip()
+        # With NO chat_reply from the model, leave it empty: the screen then shows the full recommendation (which now starts with the
+        # note), instead of a reply that is nothing but the correction and hides the actual answer.
     if authorization_request is not None:
         text += "\n\n" + audit_summary(authorization_request)
     if response.stop_reason == "max_tokens":
@@ -381,7 +410,7 @@ async def get_cto_result(
         pre_consultation_requests=parsed.pre_consultation_requests,
         authorization_request=authorization_request,
         format_findings=format_findings,
-        chat_reply=vetted_chat_reply(parsed.chat_reply),
+        chat_reply=vetted_chat_reply(chat_text),
         model=model_id,
     )
 

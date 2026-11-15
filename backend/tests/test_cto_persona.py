@@ -51,9 +51,11 @@ class TheEngineerPromptIsThereAndInTheRightPlaceTests(unittest.TestCase):
         self.assertIn("genuinely good", BLOCK)
         self.assertIn("Praise only what is really good, specifically", BLOCK)
 
-    def test_a_human_still_decides_so_the_cto_complies_when_it_is_safe_and_permitted(self):
-        self.assertIn("A human decides", BLOCK)
+    def test_the_ceo_still_has_the_final_call_so_the_cto_complies_when_it_is_safe_and_permitted(self):
+        # Reworded from "A human decides" (it read like a gatekeeper); the rule is the same. See tests/test_executive_cognition.py.
+        self.assertIn("The final call is always the CEO's", BLOCK)
         self.assertIn("safe and permitted", BLOCK)
+        self.assertNotIn("A human decides", BLOCK)
 
     def test_the_golden_rule_read_before_you_modify_and_never_from_memory(self):
         for needle in ("THE GOLDEN RULE OF EXISTING CODE", "github_read_file", "You MUST read a file before you modify it",

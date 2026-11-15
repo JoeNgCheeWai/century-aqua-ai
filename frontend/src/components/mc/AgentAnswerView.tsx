@@ -1,4 +1,5 @@
 import AuthorizationDetail from "@/components/mc/AuthorizationDetail";
+import MarkdownText from "@/components/mc/MarkdownText";
 import MockupGallery from "@/components/mc/MockupGallery";
 import ScenarioGrid from "@/components/mc/ScenarioGrid";
 import { Badge, Card, List, SectionTitle } from "@/components/mc/ui";
@@ -14,6 +15,10 @@ import type { AgentAnswer } from "@/lib/mc-types";
  * recommendation (when a short reply is shown above), the reasoning chain, the scenarios, the sources the model cited, the
  * knowledge-base documents that were retrieved, and the audit facts (score, audit id, model).
  *
+ * FORMATTING: the CTO writes its replies with ### headings, numbered steps and **bold** (its communication protocol), so ONLY the CTO's reply
+ * text is drawn through the safe reader in MarkdownText.tsx (no HTML, no links, escaped text). The other three executives are shown
+ * exactly as before, as plain text.
+ *
  * The backend appends two notes to the reply text itself (the documents list and a plain-text copy of the authorization
  * request). They are separated out by lib/mc-answer.ts so the default view is not cluttered by them. Nothing is deleted: the
  * documents are listed inside the toggle, and the authorization card already shows the request. If a note does not match its
@@ -26,6 +31,7 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
   const chat = answer.chat_reply?.trim() || null;
   const reasoning = answer.reasoning_chain ?? [];
   const sources = answer.sources ?? [];
+  const formatted = agent === "cto";
   const hasInternals = reasoning.length > 0 || !!answer.scenarios || sources.length > 0 || documents.length > 0 || !!chat;
 
   return (
@@ -36,7 +42,11 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
         {answer.audit_id == null && <Badge tone="amber">not recorded in the audit log</Badge>}
       </div>
 
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{chat ?? body}</p>
+      {formatted ? (
+        <MarkdownText text={chat ?? body} />
+      ) : (
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">{chat ?? body}</p>
+      )}
 
       {mockups.length > 0 && <MockupGallery urls={mockups} large />}
 
@@ -68,7 +78,11 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
             {chat && (
               <div>
                 <SectionTitle>Full recommendation</SectionTitle>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{body}</p>
+                {formatted ? (
+                  <MarkdownText text={body} className="text-slate-200" />
+                ) : (
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{body}</p>
+                )}
               </div>
             )}
 

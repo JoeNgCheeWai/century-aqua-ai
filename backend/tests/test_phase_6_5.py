@@ -154,8 +154,13 @@ class VettingTests(unittest.TestCase):
 
 class PromptTests(unittest.TestCase):
     def test_the_chat_reply_block_is_in_all_four_agents_and_the_summary_block_only_in_cto_and_cmo(self):
-        for module in (cao_agent, coo_agent, cto_agent, cmo_agent):
+        for module in (cao_agent, coo_agent, cmo_agent):
             self.assertIn(chat_style.CHAT_REPLY_PROMPT.strip(), module.BASE_SYSTEM_PROMPT, module.__name__)
+        # The CTO has its own version of the block (structured, friendly), see CTO_CHAT_REPLY_PROMPT; it must have exactly one chat block.
+        self.assertIn(chat_style.CTO_CHAT_REPLY_PROMPT.strip(), cto_agent.BASE_SYSTEM_PROMPT)
+        self.assertNotIn(chat_style.CHAT_REPLY_PROMPT.strip(), cto_agent.BASE_SYSTEM_PROMPT)
+        self.assertEqual(cto_agent.BASE_SYSTEM_PROMPT.count("CONVERSATIONAL REPLY (MANDATORY"), 1)
+        for module in (cao_agent, coo_agent, cto_agent, cmo_agent):
             self.assertTrue(module.BASE_SYSTEM_PROMPT.startswith("EXECUTIVE CONSTITUTION"), module.__name__)
         for module in (cto_agent, cmo_agent):
             self.assertIn(chat_style.AUTHORIZATION_SUMMARY_PROMPT.strip(), module.BASE_SYSTEM_PROMPT, module.__name__)
