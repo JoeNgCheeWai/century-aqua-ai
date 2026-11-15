@@ -134,6 +134,15 @@ export interface CouncilOption {
   proposed_action?: { action_summary: string; status: string; executed: boolean; requires_human_approval: boolean } | null;
 }
 
+/** What one executive said to another in the cross-response round. */
+export interface CouncilResponse {
+  to: string;
+  their_point: string;
+  verdict: "agree" | "partly_agree" | "disagree";
+  evaluation: string;
+  adds_or_alternative: string;
+}
+
 export interface CouncilTurn {
   round: number;
   agent_id: string;
@@ -142,6 +151,10 @@ export interface CouncilTurn {
   confidence: number | null;
   sources_cited: string[];
   tokens_used: number | null;
+  /** The agent's private working. Absent on older sessions and on chair turns; shown only behind the reasoning toggle. */
+  reasoning?: string | null;
+  /** Round 7 only: the answers to the other executives. */
+  responses?: CouncilResponse[] | null;
 }
 
 export interface CouncilConflict {
@@ -163,6 +176,8 @@ export interface CouncilSession {
   session_id: string;
   status: CouncilStatus;
   started_at: string | null;
+  /** While RUNNING: what the session is doing now (see PHASES in mc-boardroom.ts). Null when unknown (for example after a restart). */
+  phase?: string | null;
   query?: string;
   participating_agents?: string[];
   selection_rationale?: string;

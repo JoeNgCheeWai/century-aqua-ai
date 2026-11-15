@@ -260,6 +260,12 @@ model CouncilTurnLog {
   // AgentAuditLog.id when the turn was also audited, else NULL.
   auditLogId      Int?
   tokensUsed      Int?
+  // The agent's private working for this turn (the real problem, the options it weighed, the best path). Shown in Mission Control only
+  // behind the "internal reasoning" toggle. NULL for rows written before the Boardroom deep-thinking upgrade and for chair turns.
+  reasoning       String?
+  // Round 7 (the cross-response round) only: what this agent said to each OTHER executive, [{to, their_point, verdict, evaluation,
+  // adds_or_alternative}]. NULL for every other turn.
+  responses       Json?
   timestamp       DateTime          @default(now())
 
   @@index([sessionId, round])

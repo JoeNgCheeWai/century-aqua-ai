@@ -48,10 +48,10 @@ class EveryAgentGetsTheDirectivesTests(unittest.TestCase):
         for agent_id in EXECUTIVES:
             card = cp.role_card(agent_id)
             self.assertIn(persona.compact_block(), card)
-            self.assertNotIn(HEADING, card)  # the long block would not fit a 150-word turn
+            self.assertNotIn(HEADING, card)  # the long block would not fit a council turn
             self.assertLess(len(council.system_prompt_for(agent_id)) // 4, 2500, agent_id)
             self.assertIn("CLAUSE 17", council.system_prompt_for(agent_id))
-        self.assertIn("hard", persona.compact_block())  # it tells the model the word limits still win
+        self.assertIn("hard", persona.compact_block())  # it tells the model the size limit still wins
 
     def test_every_executive_has_exactly_one_block_and_no_leftover_template_markers(self):
         for agent_id, module in EXECUTIVES.items():

@@ -52,3 +52,30 @@ export function roleNote(seats: SeatId[]): string {
   if (synthesizer !== "cao") parts.push(`${synthesizer.toUpperCase()} will write the options (the CAO is not at the table)`);
   return parts.join("; ");
 }
+
+/**
+ * What a RUNNING session is doing, in words for the CEO. The backend reports the phase; it is in memory on one server, so it can be
+ * missing (null) after a restart, and then the generic line is used. A longer wait is explained, never left as a bare spinner.
+ */
+export const PHASE_MESSAGE: Record<string, string> = {
+  initial_positions: "The executives are each forming their initial position…",
+  cross_response: "Agents are reviewing each other's proposals and deliberating… this takes a little longer, and it is where the debate becomes a decision.",
+  moderation: "The chair is mapping where the executives agree and disagree…",
+  revisions: "The executives are answering the chair's follow-up question…",
+  synthesis: "The options are being written for you…",
+  red_team: "The chair is stress-testing each option to find how it could fail…",
+};
+export const GENERIC_PHASE_MESSAGE = "The Boardroom is in session. The executives are debating, which can take a minute or two.";
+
+export function phaseMessage(phase: string | null | undefined): string {
+  return (phase && PHASE_MESSAGE[phase]) || GENERIC_PHASE_MESSAGE;
+}
+
+/** The number the backend stores cross-response turns under. Rounds 1 to 6 keep their old meaning, so old sessions read the same. */
+export const CROSS_ROUND = 7;
+
+/** Rounds in the order the debate happened: the cross-response (7) comes right after the initial positions (1). */
+export function roundOrder(rounds: number[]): number[] {
+  const rank = (r: number) => (r === CROSS_ROUND ? 1.5 : r);
+  return [...new Set(rounds)].sort((a, b) => rank(a) - rank(b));
+}

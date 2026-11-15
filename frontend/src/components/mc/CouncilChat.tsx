@@ -7,7 +7,7 @@ import CouncilOptions from "@/components/mc/CouncilOptions";
 import { Badge, Card, ErrorNote, Spinner, StatusBadge, buttonPrimary, inputClass } from "@/components/mc/ui";
 import { McError, mc, useCouncilPoll } from "@/lib/mc-client";
 import { MEMORY_PREFIX, boardroomQuery, parseStored, readStore, writeStore, type BoardroomEntry } from "@/lib/mc-memory";
-import { DEFAULT_SEATS, MIN_SEATS, SEATS, canConvene, roleNote, seatProblem, toggleSeat, type SeatId } from "@/lib/mc-boardroom";
+import { DEFAULT_SEATS, MIN_SEATS, SEATS, canConvene, phaseMessage, roleNote, seatProblem, toggleSeat, type SeatId } from "@/lib/mc-boardroom";
 import { AGENT_INFO } from "@/lib/mc-types";
 
 const MEMORY_KEY = `${MEMORY_PREFIX}boardroom`;
@@ -197,7 +197,7 @@ export default function CouncilChat() {
           <Card>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3">
-                {running ? <Spinner label={`Boardroom in session… ${Math.round(elapsed / 1000)}s`} /> : session && <StatusBadge status={session.status} />}
+                {running ? <Spinner label={`${Math.round(elapsed / 1000)}s · ${phaseMessage(session?.phase)}`} /> : session && <StatusBadge status={session.status} />}
                 {session?.participating_agents?.map((a) => (
                   <Badge key={a} tone="blue">
                     {a.toUpperCase()}

@@ -745,13 +745,15 @@ A session makes several model calls (50-70 s each when solo) and would time out 
 ### Latency and cost controls (all in code, all configurable)
 | Control | Default | Env var |
 |---|---|---|
-| Output cap, agent turn (solo agents use 16384) | 600 tokens | `COUNCIL_TURN_MAX_TOKENS` |
+| Output cap, agent turn in round 1 or a revision (solo agents use 16384) | 2048 tokens (was 600) | `COUNCIL_TURN_MAX_TOKENS` |
+| Output cap, cross-response turn | 3072 tokens | `COUNCIL_CROSS_MAX_TOKENS` |
 | Output cap, COO moderation / red team and CAO synthesis | 1200 tokens | `COUNCIL_CHAIR_MAX_TOKENS` |
-| Model calls per session | 10 | `COUNCIL_MAX_CALLS` |
-| Input tokens per session | 40000 | `COUNCIL_MAX_INPUT_TOKENS` |
-| Output tokens per session | 10000 | `COUNCIL_MAX_OUTPUT_TOKENS` |
+| Model calls per session | 16 (was 10) | `COUNCIL_MAX_CALLS` |
+| Input tokens per session | 80000 (was 40000) | `COUNCIL_MAX_INPUT_TOKENS` |
+| Output tokens per session | 28000 (was 10000) | `COUNCIL_MAX_OUTPUT_TOKENS` |
 | Concurrent sessions | 3 | `COUNCIL_MAX_CONCURRENT` |
-| One model call times out after | 45 s | `COUNCIL_CALL_TIMEOUT_SECONDS` |
+| A chair call (moderation, synthesis, red team) times out after | 45 s | `COUNCIL_CALL_TIMEOUT_SECONDS` |
+| An agent turn times out after | 75 s | `COUNCIL_TURN_TIMEOUT_SECONDS` |
 | Whole session deadline | 240 s | `COUNCIL_DEADLINE_SECONDS` |
 | Model | `claude-sonnet-5-5` | `COUNCIL_MODEL` |
 
@@ -774,8 +776,8 @@ No database and no real model: a scripted fake model stands in for Anthropic, an
 - **Option count:** 1 and 4 options are rejected (also 0, none, wrong type), and the session does not resolve.
 - **Red team:** an option with an empty, missing or "n/a" failure mode is rejected.
 - **Authorization non-bypass:** a mock model that claims its proposed action is "approved" and "executed" still comes back `pending_human_approval`, `executed: false`; the module has no execution tools.
-- **Turn cap:** a mock that returns 5000 tokens is cut to the cap and charged at the cap; the API `max_tokens` is 600 / 1200, never 16384.
-- **Budget:** the 11th call is refused, the 2 reserved calls are kept, input and output are capped separately, and a revision that would overspend halts `FAILED`.
+- **Turn cap:** a mock that returns 5000 tokens is cut to the cap and charged at the cap; the API `max_tokens` is 2048 for agent turns, 3072 for the cross-response and 1200 for chair turns (it was 600 / 1200 before the deep-thinking upgrade, see below), never 16384.
+- **Budget:** the call after the ceiling (16 now, 10 before the upgrade) is refused, the 2 reserved calls are kept, input and output are capped separately, and a revision that would overspend halts `FAILED`.
 - **Parallel fan-out:** four 0.4 s calls take about 0.4 s with all four in flight at once (not about 1.6 s); a source check pins `asyncio.gather`; one failed agent degrades instead of failing the session.
 - **Async API:** POST answers 202 in under 0.5 s while the session takes seconds, polling shows `RUNNING` then the full result, bad input is 422, unknown ids 404, the orphan rule, the concurrency cap (503 + `Retry-After`), slot release after a crash.
 - **Key separation:** every agent key is refused by the council in every header; the council key is refused by all four agent endpoints, and by the kill switch; unset gives 503.
@@ -810,6 +812,26 @@ No database and no real model: a scripted fake model stands in for Anthropic, an
 - **`PRE_CONSULTATION_ENABLED` is still `False`.** The CAO's `pre_consultation_requests` stay null in solo answers; the council does not use them.
 
 
+
+
+### Boardroom deep thinking and cohesion (the cross-response round)
+
+**Why.** Round 1 was parallel monologues: agents never saw each other unless the chair ordered a revision, which most sessions never needed. The upgrade makes them actually answer each other.
+
+**What changed.**
+- **A new round after the initial positions.** Every participant reads the others' initial positions (their spoken position, stance, confidence, hard constraints and any objection aimed at them; never their private reasoning) and answers EACH one: acknowledge and evaluate the specific point, then if it agrees add a NEW operational, technical or biological layer, or if it disagrees name the exact part and offer a cohesive alternative that still solves the CEO's problem. All in parallel, so about one more call of wall-clock time. Stored under round **7** so rounds 1-6 keep their meaning for old sessions; the Debate tab shows it right after round 1.
+- **Hidden reasoning.** Every agent turn now has a `reasoning` field written FIRST (the real problem, 2-3 options weighed, the best path), the same three steps as the solo agents. It is stored in `CouncilTurnLog.reasoning` and shown only behind a "Show internal reasoning" toggle.
+- **Prompts.** The 150-word limit is gone; the directive is now "be concise but thorough enough to address the previous speakers' points", and the hard limit is the token cap, enforced in code. Every council prompt says the Boardroom is a purely strategic discussion and nothing is executed. Revisions also get the cohesion rules.
+- **Limits raised.** Agent turn 600 to 2048 tokens, cross-response 3072, chair turns unchanged at 1200. Calls per session 10 to 16, session input 40000 to 80000, output 10000 to 28000 (a healthy 4-agent session is now 11 calls; the old ceilings would have failed it). An agent turn gets 75 s instead of 45 s.
+- **Progress.** A RUNNING session reports its `phase` and Mission Control shows it, so the longer wait reads as thinking time ("Agents are reviewing each other's proposals and deliberating").
+
+**Safety (the round can only add).** A turn counts only if it answers at least one OTHER seated executive with something added; otherwise that agent keeps its initial position. A failed or timed-out turn does the same. The whole round is skipped, never failing the session, if the budget cannot also cover moderation, synthesis and red team, or if 40% of the session deadline is already used. A cross turn is MERGED with the first, never replacing it: hard constraints (the basis of any veto), flagged CEO questions and objections carry over even if the agent did not repeat them. A confidence collapse still escalates. Any proposed action is still forced to `pending_human_approval`.
+
+**Database.** Migration `20261114200000_add_council_turn_reasoning` adds `CouncilTurnLog.reasoning` and `.responses`. The store writes them only if the columns exist, so a deploy that reaches production before its migration still stores sessions (without the detail) and never leaves one RUNNING. Apply it to Neon with `prisma migrate deploy`.
+
+**Tests.** `test_boardroom_cohesion.py` (42: token limits sent to the API, prompts, the round, merge safety, progress, Debate tab labels), `test_boardroom_storage_sql.py` (4, real Postgres), and the existing council tests updated for the new round. Six mutations (cap back to 600, round never runs, merge replaced by replace, an answer-nobody turn accepted, revisions without the rules, no budget check) each fail tests.
+
+**Limits, honestly.** (1) No real-model run has checked the new prompts: the tests prove the text, the limits and the code paths, not that the model writes good reasoning or real disagreement; run one live session after merge and read the Debate tab. (2) More thinking means more cost: a healthy 4-agent session is now 11 model calls instead of 7, and each agent reply may be far longer than the old 150-word one. The real token and money cost has NOT been measured; check the first live sessions in the Debate tab (it shows tokens per turn). (3) The phase is in memory on one server, so after a restart the page shows a generic message. (4) The cross-response only compares positions as text: it cannot verify a claim. (5) Existing sessions have no reasoning and no round 7.
 
 ---
 

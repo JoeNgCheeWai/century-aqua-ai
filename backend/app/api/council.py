@@ -110,6 +110,9 @@ def _payload(row: dict[str, Any], turns: list[dict[str, Any]]) -> dict[str, Any]
     status = row["status"]
     body: dict[str, Any] = {"session_id": row["id"], "status": status, "started_at": _iso(row.get("startedAt"))}
     if status == "RUNNING":
+        # What the session is doing right now (in this process only), so Mission Control can say so instead of showing a bare
+        # spinner. None after a restart or when another process runs it; the page then falls back to its generic message.
+        body["phase"] = council.current_phase(row["id"])
         return body
     questions = council_store.split_questions(row.get("ceoQuestions"))
     body.update({
@@ -134,7 +137,9 @@ def _payload(row: dict[str, Any], turns: list[dict[str, Any]]) -> dict[str, Any]
         "turns": [
             {"round": t["round"], "agent_id": t["agentId"], "position": t["position"],
              "hard_constraints": _json(t.get("hardConstraints")), "confidence": t.get("confidence"),
-             "sources_cited": list(t.get("sourcesCited") or []), "tokens_used": t.get("tokensUsed")}
+             "sources_cited": list(t.get("sourcesCited") or []), "tokens_used": t.get("tokensUsed"),
+             # Private working and the answers to the other executives (NULL on older rows and on chair turns).
+             "reasoning": t.get("reasoning"), "responses": _json(t.get("responses"))}
             for t in turns
         ],
         # Constants: the council has no execution tools, so nothing it returns has been, or can be, executed.
