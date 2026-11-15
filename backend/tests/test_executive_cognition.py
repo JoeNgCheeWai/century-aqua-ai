@@ -154,7 +154,7 @@ class SchemasAreUntouchedTests(unittest.TestCase):
     def test_the_constitutions_required_lines_are_still_there(self):
         for agent, module in AGENTS.items():
             self.assertIn("Recommendation for human review:", module.BASE_SYSTEM_PROMPT, agent)
-            self.assertIn("ESCALATE TO HUMAN", module.BASE_SYSTEM_PROMPT, agent)
+            self.assertIn("Recommendation for CEO review", module.BASE_SYSTEM_PROMPT, agent)
 
     def test_the_constitution_still_comes_before_everything_this_upgrade_added(self):
         for agent, module in AGENTS.items():
@@ -270,7 +270,7 @@ class CtoProtocolSafetyTests(unittest.TestCase):
             self.assertIn(needle, PROTOCOL, needle)
 
     def test_the_constitutions_required_lines_keep_their_exact_opening_words(self):
-        for needle in ('"Confidence:"', '"Recommendation for human review:"', '"ESCALATE TO HUMAN:"', "Make what follows the colon collaborative"):
+        for needle in ('"Confidence:"', '"Recommendation for human review:"', '"Recommendation for CEO review:"', "Make what follows the colon collaborative"):
             self.assertIn(needle, PROTOCOL, needle)
         self.assertIn("Recommendation for human review:", CTO)  # the constitution is untouched and the scorer still finds the line
 
@@ -351,6 +351,200 @@ class CtoChatReplyPromptTests(unittest.TestCase):
         self.assertNotIn("chat_reply", example)
         for needle in ("CRITICAL EXECUTION RULE", "files_to_update", "pending_human_approval", "AUTHORIZATION WORKFLOW"):
             self.assertIn(needle, CTO, needle)
+
+
+class CtoZeroFrictionPromptTests(unittest.TestCase):
+    """The instructions: the CTO is the technical person, routine work is not an emergency, and the robotic labels are gone from every prompt."""
+
+    ZERO = persona.CTO_ENGINEER_PROMPT[persona.CTO_ENGINEER_PROMPT.index("ZERO FRICTION"):persona.CTO_ENGINEER_PROMPT.index("COMMUNICATION PROTOCOL: HOW YOU")]
+
+    def test_the_cto_is_told_it_is_the_technical_person_and_never_to_hand_routine_work_back(self):
+        for needle in ("You are the technical expert", 'NEVER tell the CEO to get, ask, hire or involve "a technical person"',
+                       '"a developer"', '"an engineer"', '"your IT team"', 'never write "I recommend a technical person does this"'):
+            self.assertIn(needle, self.ZERO, needle)
+
+    def test_it_is_told_to_give_the_copy_pasteable_solution_in_the_first_reply(self):
+        for needle in ("Give the COPY-PASTEABLE solution in the first reply", "`backticks` or a code block", "what the CEO should see when it worked"):
+            self.assertIn(needle, self.ZERO, needle)
+
+    def test_a_read_only_query_and_a_standard_prisma_migration_are_routine_not_alarming(self):
+        for needle in ("A READ-ONLY QUERY (a SELECT, a count) changes nothing: give it straight away, with no production warning and no approval",
+                       "A STANDARD PRISMA MIGRATION IS ROUTINE", "`npx prisma migrate deploy` (from the `frontend` folder", "Never suggest `db push`"):
+            self.assertIn(needle, self.ZERO, needle)
+
+    def test_it_must_believe_what_the_ceo_says_they_saw_and_move_to_the_next_step(self):
+        for needle in ("BELIEVE WHAT THE CEO SAYS THEY SAW", 'If they got an "already exists" error, the table is already there',
+                       "do not ask them to prove it", "give the one next step"):
+            self.assertIn(needle, self.ZERO, needle)
+
+    def test_the_emergency_label_is_for_real_emergencies_only_and_the_robotic_phrases_are_only_ever_forbidden(self):
+        self.assertIn('"Recommendation for CEO review:" opens an answer only for real emergencies', self.ZERO)
+        self.assertIn('Never write "ESCALATE TO HUMAN" or "Waiting for your decision": say "This is ready for your approval"', self.ZERO)
+        self.assertEqual(CTO.count("ESCALATE TO HUMAN"), 1)  # only inside that one "never write" instruction
+        for agent in ("cao", "coo", "cmo"):
+            self.assertNotIn("ESCALATE TO HUMAN", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+        for line in CTO.splitlines():
+            if "a technical person" in line:
+                self.assertTrue("NEVER" in line or "never" in line, line[:120])  # every mention is a prohibition
+
+    def test_the_constitutions_opening_line_is_collaborative_and_routine_work_is_not_a_reason_for_it(self):
+        from app.agents import base_constitution
+
+        footer = base_constitution.CONSTITUTION_FOOTER
+        self.assertIn('"Recommendation for CEO review:"', footer)
+        self.assertNotIn("ESCALATE TO HUMAN", footer)
+        self.assertIn("a migration, a read-only query or a small interface tweak is routine", footer)
+        self.assertIn("never tell the reader to hand it to someone else", footer)
+        self.assertIn("CLAUSE 11: HUMAN OVERSIGHT & ESCALATION", base_constitution.EXECUTIVE_CONSTITUTION)  # the clause itself is untouched
+
+    def test_the_new_text_asks_for_nothing_the_real_model_refused_and_has_no_braces(self):
+        for banned in ("private working", "behind a toggle", "your private", "keep this secret", "hide"):
+            self.assertNotIn(banned, self.ZERO.lower(), banned)
+        self.assertNotIn("{", self.ZERO)
+        self.assertNotIn("}", self.ZERO)
+
+    def test_the_support_pillar_no_longer_sends_the_user_to_an_engineer(self):
+        self.assertNotIn("escalate to an engineer", cto_prompt.CTO_SYSTEM_PROMPT)
+        self.assertIn("Never hand it to \"an engineer\" (see ZERO FRICTION)", cto_prompt.CTO_SYSTEM_PROMPT)
+
+
+class CtoZeroFrictionScenarioTests(unittest.TestCase):
+    """
+    The two scenarios the CEO reported, run through a whole CTO call with a SCRIPTED model (no network).
+
+    The scripted model BEHAVES BADLY on purpose, in the CEO's own words ("ESCALATE TO HUMAN", "a technical person", "Waiting for your
+    decision"). So these prove the CODE stops those words reaching the CEO whatever the model writes. They cannot prove the real model follows
+    the new prompt: scripts/try_cto_zero_friction.py does that, against the real model.
+    """
+
+    COMMAND = "npx prisma migrate deploy"
+    NEW_TOGGLE = "frontend/src/components/mc/ToggleLabel.tsx"
+    FORBIDDEN_1 = ("ESCALATE TO HUMAN", "technical person", "get a developer")
+
+    def run_cto(self, payload, message):
+        import asyncio
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        from tests.test_cto_reads_before_writing import ScriptedClient, text_reply
+        from tests.test_read_file_tool import TOKEN
+
+        client = ScriptedClient([text_reply(payload)])
+        env = {k: v for k, v in os.environ.items() if k not in ("GOVERNANCE_DATABASE_URL", "DATABASE_URL", "PINECONE_API_KEY", "PINECONE_INDEX")}
+        env["GITHUB_PAT"] = TOKEN
+        with mock.patch.object(cto_agent, "_client", client), mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("requests.request", side_effect=AssertionError("no network in this test")), \
+                mock.patch.object(cto_agent.tools, "github_file_status", lambda path: "missing"):
+            result = asyncio.run(cto_agent.get_cto_result(message, None, use_rag=False, audit=False, memory=False))
+        return result, client
+
+    def database_payload(self, chat, response=None):
+        return {"response": response or chat + "\n\nConfidence: 85%. Recommendation for human review: run the migration.",
+                "reasoning_chain": ["Step 1: the table is missing.", "Data and sources: the migration file.", "Assumptions: none.", "Limitations: not run."],
+                "scenarios": None, "pre_consultation_requests": {"coo_query": None, "cto_query": None}, "chat_reply": chat,
+                "authorization_request": {"action_summary": "Create the ApprovedStrategies table", "risk_level": "high",
+                                          "impact": "Adds one table. Nothing existing changes.", "proposed_code_diff": None,
+                                          "proposed_commands": ["cd frontend", self.COMMAND], "rollback_plan": "Drop the new table if it is not wanted."}}
+
+    def toggle_payload(self, chat):
+        content = 'export default function ToggleLabel() {\n  return <span className="text-lg">Privacy</span>;\n}\n'
+        plan = {"branch_name": "agent/bigger-toggle-label", "pr_title": "Make the toggle label larger", "pr_body": "A bigger label.",
+                "files_to_update": [{"path": self.NEW_TOGGLE, "content": content, "commit_message": "Bigger label"}]}
+        return {"response": chat + "\n\nConfidence: 90%. Recommendation for human review: approve the pull request.",
+                "reasoning_chain": ["Step 1: the label is small.", "Data and sources: the component.", "Assumptions: none.", "Limitations: not run."],
+                "scenarios": None, "pre_consultation_requests": {"coo_query": None, "cto_query": None}, "chat_reply": chat,
+                "authorization_request": {"action_summary": "Make the toggle label larger", "risk_level": "low", "impact": "One label gets bigger.",
+                                          "proposed_code_diff": None, "proposed_commands": [], "rollback_plan": "Close the pull request.",
+                                          "execution_plan": plan}}
+
+    # ---- Scenario 1: "set up the Learning Loop table"
+
+    def test_scenario_1_missing_table_the_cto_never_escalates_or_hands_it_to_a_technical_person(self):
+        chat = ("ESCALATE TO HUMAN: This is a change to your live production database. I recommend a technical person does this. "
+                "You could get a developer to run it. Here is the command: `npx prisma migrate deploy`")
+        result, _ = self.run_cto(self.database_payload(chat), "The ApprovedStrategies table is missing. Help me set up the Learning Loop table.")
+        for text in (result.reply, result.chat_reply):
+            for banned in self.FORBIDDEN_1:
+                self.assertNotIn(banned.lower(), text.lower(), (banned, text[:200]))
+
+    def test_scenario_1_the_reply_has_collaborative_language_and_the_copy_pasteable_solution(self):
+        chat = ("ESCALATE TO HUMAN: this is a change to your live production database. I recommend a technical person does this. "
+                "Run `npx prisma migrate deploy` from the frontend folder.")
+        result, _ = self.run_cto(self.database_payload(chat), "Help me set up the Learning Loop table.")
+        for text in (result.reply, result.chat_reply):
+            self.assertIn("Recommendation for CEO review", text)  # the old label, relabelled
+            self.assertIn("Ready for your approval", text)  # added by code under the request
+            self.assertIn(self.COMMAND, text)  # the exact command is there to copy
+        self.assertIn("`npx prisma migrate deploy`", result.chat_reply)  # in a code span, ready to paste
+        self.assertEqual(result.authorization_request["proposed_commands"], ["cd frontend", self.COMMAND])  # the request itself is untouched
+
+    def test_scenario_1_a_well_behaved_model_is_left_exactly_as_it_wrote(self):
+        chat = "Good news, this is routine. Run `npx prisma migrate deploy` from the **frontend** folder, then you should see the migration applied."
+        result, _ = self.run_cto(self.database_payload(chat), "Help me set up the Learning Loop table.")
+        self.assertTrue(result.chat_reply.startswith(chat))  # nothing in it was altered
+        self.assertIn("Ready for your approval", result.chat_reply)
+        self.assertNotIn("Recommendation for CEO review", result.chat_reply)
+
+    def test_scenario_1_the_model_is_given_the_zero_friction_rules_in_its_system_prompt(self):
+        _, client = self.run_cto(self.database_payload("Run `npx prisma migrate deploy`."), "Help me set up the table.")
+        system = client.calls[0]["system"]
+        for needle in ("ZERO FRICTION", "A STANDARD PRISMA MIGRATION IS ROUTINE", "A READ-ONLY QUERY (a SELECT, a count) changes nothing",
+                       "BELIEVE WHAT THE CEO SAYS THEY SAW", "Recommendation for CEO review:"):
+            self.assertIn(needle, system, needle)
+        self.assertNotIn("ESCALATE TO HUMAN:", system)  # it is only ever named inside a prohibition, never as a line to write
+
+    def test_scenario_1_a_safe_read_only_query_in_the_reply_is_never_touched_or_flagged(self):
+        chat = "Run this to see what is there: `SELECT * FROM \"ApprovedStrategies\";` and tell me what you see."
+        payload = self.database_payload(chat)
+        payload["authorization_request"] = None
+        result, _ = self.run_cto(payload, "How do I check the table?")
+        self.assertIn('`SELECT * FROM "ApprovedStrategies";`', result.chat_reply)
+        self.assertNotIn("Ready for your approval", result.chat_reply)  # a query needs no approval, so no approval line is added
+        self.assertNotIn("ESCALATE", result.chat_reply.upper())
+
+    def test_scenario_1_a_deflection_that_carries_the_command_is_kept_and_logged_not_lost(self):
+        chat = "Ask a developer to run `npx prisma migrate deploy` for you."
+        result, _ = self.run_cto(self.database_payload(chat), "Set up the table.")
+        self.assertIn("`npx prisma migrate deploy`", result.chat_reply)  # the command survives
+        self.assertTrue(any("kept a deflecting sentence" in f for f in result.format_findings), result.format_findings)  # and it is reported
+
+    # ---- Scenario 2: "make a toggle label slightly larger"
+
+    def test_scenario_2_a_ui_change_never_says_waiting_for_your_decision_or_escalates(self):
+        chat = ("ESCALATE TO HUMAN: This is a code change, so it needs your final approval. Waiting for your decision. "
+                "The change is the class `text-lg` on the label.")
+        result, _ = self.run_cto(self.toggle_payload(chat), "Please make the toggle label slightly larger.")
+        for text in (result.reply, result.chat_reply):
+            self.assertNotIn("waiting for your decision", text.lower())
+            self.assertNotIn("ESCALATE TO HUMAN", text)
+
+    def test_scenario_2_the_reply_uses_collaborative_language_and_carries_the_actual_solution(self):
+        chat = "ESCALATE TO HUMAN: this is a code change. Waiting for your decision. The change is the class `text-lg` on the label."
+        result, _ = self.run_cto(self.toggle_payload(chat), "Please make the toggle label slightly larger.")
+        for text in (result.reply, result.chat_reply):
+            self.assertIn("Recommendation for CEO review", text)
+            self.assertIn("Ready for your approval", text)
+        self.assertIn("`text-lg`", result.chat_reply)  # the exact change, in a code span
+        plan = result.authorization_request["execution_plan"]
+        self.assertIsNotNone(plan)  # the complete new file is in the plan, ready for approval
+        self.assertIn('className="text-lg"', plan["files_to_update"][0]["content"])
+
+    def test_scenario_2_the_note_under_the_request_is_written_by_code_in_collaborative_words(self):
+        result, _ = self.run_cto(self.toggle_payload("A small change, ready to go."), "Make the label larger.")
+        self.assertIn("**Ready for your approval:** this is ready whenever you are.", result.reply)
+        self.assertIn("approving only opens a pull request that is not live until it is merged", result.reply)
+        self.assertIn("**Ready for your approval:** this is ready whenever you are.", result.chat_reply)
+
+    def test_the_old_label_is_still_scored_as_an_opening_escalation_so_scoring_is_unchanged(self):
+        from app.governance.scoring import score_response
+
+        low = "Reasoning: limited evidence, sources: general knowledge. Confidence: 40%.\n\nRecommendation for human review: gather data."
+        for opening in ("Recommendation for CEO review: low confidence.", "ESCALATE TO HUMAN: low confidence."):
+            self.assertEqual(score_response(opening + "\n" + low).score, 100, opening)
+        self.assertLess(score_response(low).score, 100)  # without either opening line the low confidence is still penalised
+
 
 
 if __name__ == "__main__":

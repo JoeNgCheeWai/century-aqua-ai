@@ -188,7 +188,7 @@ class PromptTests(unittest.TestCase):
         for needle in ("You are NOT an intrusion-detection system", "cannot block, quarantine or change anything",
                        "AUTO-BLOCK, as a PROPOSAL", "You never state that something has been blocked",
                        "0-39 normal or low", "40-69 suspicious", "70-89 likely hostile", "90-100 critical",
-                       "ESCALATE TO HUMAN:"):
+                       "Recommendation for CEO review:"):
             self.assertIn(needle, text, needle)
 
     def test_the_cto_is_told_it_has_no_tools_and_no_access(self):

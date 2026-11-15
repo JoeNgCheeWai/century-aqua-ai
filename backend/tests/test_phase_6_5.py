@@ -359,14 +359,16 @@ class AuthorizationEndpointSummaryTests(unittest.TestCase):
 
     def test_the_cto_returns_the_summary_inside_the_authorization_request(self):
         self.addCleanup(cmo_env().stop)
-        waiting = "A change is waiting for your decision. Nothing has been done yet."
+        waiting = "A small change is drafted. Nothing has been done yet."  # neutral wording: the language guard rewrites the retired "waiting for your decision"
         answer = dict(CHANGE_ANSWER, chat_reply=waiting)
         answer["authorization_request"] = dict(CHANGE_ANSWER["authorization_request"], executive_summary=SUMMARY)
         with mock.patch.object(cto_agent, "_client", fake_client(model_text(answer))):
             body = self.client.post("/api/cto", headers={"X-Internal-CTO-Key": CTO_KEY}, json={"message": "change it"}).json()
         self.assertEqual(body["authorization_request"]["executive_summary"], SUMMARY)
         self.assertEqual(body["authorization_request"]["status"], "pending_human_approval")
-        self.assertEqual(body["chat_reply"], waiting)
+        # The model's own sentence reaches the API response whole; code then adds its collaborative "Ready for your approval" line under it.
+        self.assertTrue(body["chat_reply"].startswith(waiting))
+        self.assertIn("Ready for your approval", body["chat_reply"])
 
 
 if __name__ == "__main__":

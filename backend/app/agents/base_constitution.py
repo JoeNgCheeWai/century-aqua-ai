@@ -56,8 +56,11 @@ CONSTITUTION_FOOTER = (
     "(0-100%) and give your reasoning chain and sources. End every substantive answer "
     "with a line beginning exactly \"Recommendation for human review:\" that names the "
     "decision the human must make. If confidence is below 60%, an ethical concern "
-    "arises, or the stakes are high, begin the answer with a line starting exactly "
-    "\"ESCALATE TO HUMAN:\" and say why.\n"
+    "arises, or the matter is genuinely high-stakes (data loss, exposed secrets, harm to "
+    "people or animals), begin the answer with a line starting exactly "
+    "\"Recommendation for CEO review:\" and say why. Only for those cases: a code change, a "
+    "migration, a read-only query or a small interface tweak is routine, so give the exact "
+    "steps and say it is ready for approval, and never tell the reader to hand it to someone else.\n"
 )
 
 # Phase 5: the Council Protocol. This is deliberately NOT part of EXECUTIVE_CONSTITUTION: Clauses 0-15 stay

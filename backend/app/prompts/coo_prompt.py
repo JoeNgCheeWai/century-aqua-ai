@@ -152,7 +152,7 @@ LENGTH BUDGET (the whole JSON object must be COMPLETE: an object that is cut off
 
 1. "response" (the final recommendation)
 - Bottom line first, then the key reasons, risks and next steps, as in TONE AND STYLE above.
-- Everything the Executive Constitution requires of an answer applies INSIDE this string: state your overall confidence as "Confidence: NN%", cite excerpts as [n], begin with a line "ESCALATE TO HUMAN: ..." when the constitution requires it, and end with the line "Recommendation for human review: ..." naming the decision the human must make.
+- Everything the Executive Constitution requires of an answer applies INSIDE this string: state your overall confidence as "Confidence: NN%", cite excerpts as [n], begin with a line "Recommendation for CEO review: ..." when the constitution requires it, and end with the line "Recommendation for human review: ..." naming the decision the human must make.
 - When a CAO recommendation or scenario set is in front of you, include a section headed "Stress test of the CAO plan" that follows pillar 10: the plan restated, financial viability, operational realism, your rating of the CAO's Optimistic scenario ("sound", "stretched" or "financially reckless", with the triggering assumption quoted), where your numbers differ and why, and your verdict (SUPPORTED, SUPPORTED WITH CONDITIONS, NOT SUPPORTED or CANNOT ASSESS) with the conditions or gates.
 - Keep it consistent with reasoning_chain and scenarios. Never recommend something your own reasoning_chain does not support.
 

@@ -100,7 +100,7 @@ async def maybe_route(audit_id: int, agent_id: str, request: dict[str, Any] | No
         return await _route(audit_id, agent_id, request, originals or {}, reviewer)
     except Exception as exc:  # whatever went wrong, nothing was approved by accident
         logger.error("operational_approval: failed for audit #%s (%s)", audit_id, type(exc).__name__)
-        return _outcome("ceo_required", "The task is waiting for your decision (the operational review could not complete).")
+        return _outcome("ceo_required", "The COO review could not complete, so this one is yours to approve.")
 
 
 async def _route(audit_id: int, agent_id: str, request: dict[str, Any] | None, originals: dict[str, str], reviewer: coo_review.Reviewer | None) -> dict[str, Any] | None:
@@ -115,21 +115,21 @@ async def _route(audit_id: int, agent_id: str, request: dict[str, Any] | None, o
     check = plan_checks.check_plan(plan, originals)
     verdict = safe_to_implement.classify(request, check.passed)
     if not verdict.safe:
-        return _outcome("ceo_required", "This task is not on the safe list, so it is waiting for your decision.", reasons=verdict.reasons)
+        return _outcome("ceo_required", "This is not one of the small safe tasks the COO approves for you, so it is yours to approve.", reasons=verdict.reasons)
     unread = await asyncio.to_thread(_unread_existing, request, set(originals))
     if unread:
-        return _outcome("ceo_required", "This task replaces an existing file that was not read first, so it is waiting for your decision.", reasons=unread)
+        return _outcome("ceo_required", "It replaces a file that was not read first, so it is yours to approve once that is checked.", reasons=unread)
     problems = coo_review.reported_problems(request, check.passed)
     if problems:
         await _record(audit_id, operations_log.ROUTE_DECLINED, verdict.kind, problems, None)
-        return _outcome("ceo_required", "The COO could not treat this as fully reported, so it is waiting for your decision.", reasons=problems)
+        return _outcome("ceo_required", "It is missing part of its report (see the reasons), so it is yours to approve.", reasons=problems)
     task = coo_review.build_task_text(request, verdict.kind, verdict.reasons, check.checks, agent_id)
     coo = await coo_review.review(task, reviewer)
     if not coo.approved:
         why = [coo.failure] if coo.failure else [f"{k}: {v}" for k, v in coo.reasons.items() if v]
         route = operations_log.ROUTE_UNAVAILABLE if coo.failure else operations_log.ROUTE_DECLINED
         await _record(audit_id, route, verdict.kind, why, coo.as_dict())
-        return _outcome("ceo_required", "The COO did not approve this one, so it is waiting for your decision.", reasons=why, coo=coo.as_dict())
+        return _outcome("ceo_required", "The COO had a concern and passed it to you, so it is yours to approve.", reasons=why, coo=coo.as_dict())
     try:
         decided = await authorization.apply_decision(audit_id, "approve", ACTOR, remember=False)
     except Exception as exc:  # a person decided first, or the database failed: either way nothing was approved here
@@ -149,4 +149,5 @@ def approval_note(outcome: dict[str, Any] | None) -> str:
         link = f" It opened a pull request: {outcome['pr_url']}." if outcome.get("pr_url") else " The pull request could not be opened, so nothing was created."
         return ("**COO-approved under your delegation:** this was a small, safe task, so the COO reviewed and approved it for you." + link
                 + " It is not live: you (or a developer) still review and merge the pull request.")
-    return "**Waiting for your decision:** " + str(outcome.get("message", "")).rstrip(".") + "."
+    # "Ready for your approval", not "Waiting for your decision": the CEO found the old label robotic. Same meaning, collaborative words.
+    return "**Ready for your approval:** " + str(outcome.get("message", "")).rstrip(".") + "."

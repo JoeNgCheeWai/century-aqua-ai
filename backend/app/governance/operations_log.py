@@ -123,7 +123,7 @@ def summary_text(facts: dict[str, Any]) -> str:
     span = "today" if days == 1 else f"in the last {days} days"
     if not facts["reviewed"]:
         return (f"Operations Summary ({span}): the COO has not reviewed any small task {span}, so nothing was approved without you. "
-                "Every proposed change is still waiting for your decision.")
+                "Every proposed change is still yours to approve.")
     lines = [f"Operations Summary ({span}): the COO reviewed {_plural(facts['reviewed'], 'small task')}."]
     if facts["approved"]:
         kinds = ", ".join(f"{n} {k}" for k, n in sorted(facts["by_kind"].items(), key=lambda kv: -kv[1]))

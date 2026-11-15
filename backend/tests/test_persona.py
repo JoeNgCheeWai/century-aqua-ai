@@ -172,10 +172,10 @@ class NothingAroundThePersonaBrokeTests(unittest.TestCase):
         for module in EXECUTIVES.values():
             system = module.BASE_SYSTEM_PROMPT
             self.assertIn("Recommendation for human review:", system)
-            self.assertIn("ESCALATE TO HUMAN:", system)
+            self.assertIn("Recommendation for CEO review:", system)
         block = persona.persona_block("cao")
         self.assertIn("Recommendation for human review:", block)  # the block itself repeats that these lines stay
-        self.assertIn("ESCALATE TO HUMAN:", block)
+        self.assertIn("Recommendation for CEO review:", block)
 
     def test_a_warm_plain_answer_still_parses_scores_and_keeps_its_authorization_request(self):
         from app.governance.scoring import score_response

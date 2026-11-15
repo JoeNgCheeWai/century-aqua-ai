@@ -52,7 +52,7 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
 
       {request && (
         <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-4">
-          <SectionTitle>Waiting for your decision</SectionTitle>
+          <SectionTitle>Ready for your approval</SectionTitle>
           <AuthorizationDetail request={request} agentId={agent} showMockups={false} />
           <p className="mt-3 text-xs text-slate-400">Approve or reject it under Authorizations (audit #{answer.audit_id ?? "?"}).</p>
         </div>
