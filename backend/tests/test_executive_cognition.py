@@ -7,6 +7,7 @@ the rest of the prompt. They cannot prove the model follows them: no real-model 
 No database, no network.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -17,7 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.agents import cao_agent, cmo_agent, coo_agent, cto_agent, council  # noqa: E402
 from app.agents.cao_reasoning import MAX_CHAIN_ENTRIES  # noqa: E402
-from app.prompts import cao_prompt, cmo_prompt, coo_prompt, cto_prompt, persona  # noqa: E402
+from app.prompts import cao_prompt, chat_style, cmo_prompt, coo_prompt, cto_prompt, persona  # noqa: E402
 
 AGENTS = {"cao": cao_agent, "coo": coo_agent, "cmo": cmo_agent, "cto": cto_agent}
 ROLE_TITLE = {"cao": "PROACTIVE AQUACULTURE CONSULTANT", "coo": "TOP OPERATIONS EXPERT", "cmo": "CREATIVE GURU", "cto": "SOFTWARE ENGINEERING EXPERT"}
@@ -177,5 +178,181 @@ class SchemasAreUntouchedTests(unittest.TestCase):
             self.assertLess(len(module.BASE_SYSTEM_PROMPT) // 4, 16_000, f"{agent} prompt is over ~16k tokens")
 
 
+CTO = cto_agent.BASE_SYSTEM_PROMPT
+PROTOCOL = persona.CTO_ENGINEER_PROMPT[persona.CTO_ENGINEER_PROMPT.index("COMMUNICATION PROTOCOL: HOW YOU TALK TO THE CEO"):]
+# The wording the CEO called gatekeeping. It must not be a phrase the CTO is TOLD to say; the protocol may quote it only to forbid it.
+GATEKEEPER_PHRASES = ("a human should confirm", "a human must decide", "Nothing has been changed by me", "pending human approval")
+
+
+class CtoCommunicationProtocolTests(unittest.TestCase):
+    """The CTO talks like a friendly, expert assistant to a visionary CEO (the "Qwen-style" communication protocol)."""
+
+    def test_the_protocol_is_in_the_ctos_real_prompt_once_and_after_the_voice_block_and_before_its_old_role_text(self):
+        self.assertEqual(CTO.count("COMMUNICATION PROTOCOL: HOW YOU TALK TO THE CEO"), 1)
+        order = [CTO.index("VOICE, PLAIN LANGUAGE AND SCOPE"), CTO.index("SOFTWARE ENGINEERING EXPERT"),
+                 CTO.index("COMMUNICATION PROTOCOL: HOW YOU TALK"), CTO.index("STRATEGIC THINKING PROCESS"), CTO.index("You are AI_CTO,")]
+        self.assertEqual(order, sorted(order))
+
+    def test_only_the_cto_is_given_it(self):
+        for agent in ("cao", "coo", "cmo"):
+            self.assertNotIn("COMMUNICATION PROTOCOL", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+            self.assertNotIn("VISIONARY CEO", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+            self.assertIn("No bullet points, no headings", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)  # their plain-reply rule is unchanged
+
+    def test_rule_1_speak_to_a_visionary_ceo_with_analogies_and_step_by_step_guidance(self):
+        for needle in ("SPEAK TO A VISIONARY CEO, NOT A CODER", "never opened the code", "Never talk down to them",
+                       "short, accurate everyday analogy", "the database is the company's record book",
+                       "Never assume they know where anything is", "step-by-step guidance", "one action per step",
+                       "what they should see when it worked", "never invent one"):
+            self.assertIn(needle, PROTOCOL, needle)
+
+    def test_rule_2_structured_formatting_numbered_lists_bold_and_clear_headings(self):
+        for needle in ("ALWAYS USE STRUCTURED FORMATTING", "numbered list (1., 2., 3.)", "one action per number", "**bold**",
+                       "key terms, file names and any important warning", "### Step 1", "### What to Look For", "### Why This Matters",
+                       "### My Recommendation", "No tables, no HTML, no emojis"):
+            self.assertIn(needle, PROTOCOL, needle)
+
+    def test_a_simple_question_gets_a_short_warm_answer_not_a_template(self):
+        self.assertIn("A very simple question", PROTOCOL)
+        self.assertIn("short, warm answer, not a template", PROTOCOL)
+
+    def test_rule_3_explain_the_why_before_asking_the_ceo_to_do_something(self):
+        for needle in ("EXPLAIN THE WHY BEFORE YOU ASK", "Before you ask the CEO to do, check or approve anything",
+                       "why it matters, in business terms", "the foundation of the Learning Loop"):
+            self.assertIn(needle, PROTOCOL, needle)
+        self.assertLess(PROTOCOL.index("EXPLAIN THE WHY"), PROTOCOL.index("BRING SOLUTIONS"))
+
+    def test_rule_4_proactive_solutions_one_or_two_actionable_options_and_a_clear_recommendation(self):
+        for needle in ("BRING SOLUTIONS, NOT JUST PROBLEMS", "never stop at describing it", "1 or 2 clear, actionable solutions",
+                       "its first step and its trade-off", "say which one you recommend and why", "I recommend option 1, because"):
+            self.assertIn(needle, PROTOCOL, needle)
+
+    def test_rule_5_the_safety_guardrail_is_reframed_as_collaborative_and_empowering_language(self):
+        for needle in ("KEEP THE SAFEGUARDS, SAY THEM LIKE A PARTNER", "as a partner describing the safest path", "never as a gatekeeper",
+                       "I have outlined the safest path forward and the trade-offs",
+                       "Once you confirm this fits your vision, I will prepare the precise execution plan for your final approval",
+                       "your final approval", "your decision", "your call"):
+            self.assertIn(needle, PROTOCOL, needle)
+
+
+class CtoProtocolSafetyTests(unittest.TestCase):
+    """Friendlier wording must not weaken a safeguard, hide a risk, or bring back the gatekeeper phrases."""
+
+    def test_the_gatekeeper_phrases_are_forbidden_not_instructed(self):
+        forbidden = next(line for line in PROTOCOL.splitlines() if line.startswith("- Do not say"))
+        for phrase in ("a human must decide", "a human should confirm", "Nothing has been changed by me", "pending human approval"):
+            self.assertIn(phrase, forbidden, phrase)  # each appears only inside the "do not say" instruction
+            self.assertEqual(PROTOCOL.count(phrase), 1, phrase)
+        rest = persona.CTO_ENGINEER_PROMPT.replace(forbidden, "")
+        for phrase in GATEKEEPER_PHRASES:
+            self.assertNotIn(phrase, rest, phrase)
+
+    def test_the_old_gatekeeper_wording_the_cto_was_told_to_say_is_gone_from_its_real_prompt(self):
+        self.assertNotIn("A human decides", CTO)  # the CTO's engineer and thinking lines now say "The final call is the CEO's."
+        self.assertIn("The final call is the CEO's", CTO)
+        self.assertNotIn("nothing is applied until a human approves", CTO)
+        self.assertNotIn("that nothing has been executed and that a human must review and approve the request first", CTO)
+        self.assertIn("the plan is ready for the CEO's final approval, and that nothing is applied until the CEO approves it", CTO)
+        # The old TONE AND STYLE instruction is replaced. (The protocol still NAMES that phrase, once, to say it wins over it.)
+        self.assertNotIn("- Precise, practical and direct. Lead with the bottom line", CTO)
+        self.assertEqual(CTO.count("Precise, practical and direct"), 1)
+        self.assertIn("Clear, practical and friendly, as the COMMUNICATION PROTOCOL above describes", CTO)
+
+    def test_the_other_executives_keep_their_human_decides_wording(self):
+        for agent in ("cao", "coo", "cmo"):
+            self.assertIn("A human decides", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+
+    def test_the_protocol_cannot_be_used_to_claim_an_action_or_soften_a_safety_warning(self):
+        for needle in ("It changes no fact you must state, no safety rule, no limit, and not the JSON format",
+                       "Never write that you have deployed, applied, fixed, updated, sent or published anything",
+                       'Say "prepared" or "drafted" only when the plan is really in this answer',
+                       "Friendly never means vague", "still said clearly, in bold"):
+            self.assertIn(needle, PROTOCOL, needle)
+
+    def test_the_constitutions_required_lines_keep_their_exact_opening_words(self):
+        for needle in ('"Confidence:"', '"Recommendation for human review:"', '"ESCALATE TO HUMAN:"', "Make what follows the colon collaborative"):
+            self.assertIn(needle, PROTOCOL, needle)
+        self.assertIn("Recommendation for human review:", CTO)  # the constitution is untouched and the scorer still finds the line
+
+    def test_the_protocol_asks_for_nothing_the_real_model_refused_in_the_boardroom(self):
+        for banned in ("private working", "behind a toggle", "your private", "keep this secret", "hide"):
+            self.assertNotIn(banned, PROTOCOL.lower(), banned)
+
+    def test_the_protocol_wins_over_the_old_plain_text_and_precise_voice_for_the_cto_only(self):
+        self.assertIn('it wins over the "Precise, practical and direct" voice', PROTOCOL)
+        self.assertIn("plain text without headings, lists or bold", PROTOCOL)
+
+    def test_the_protocol_has_no_braces_so_it_cannot_break_a_format_call(self):
+        self.assertNotIn("{", PROTOCOL)
+        self.assertNotIn("}", PROTOCOL)
+
+
+class CtoChatReplyPromptTests(unittest.TestCase):
+    """What the CEO reads first is the chat_reply, so its own prompt must allow and ask for the structured, friendly layout."""
+
+    CHAT = chat_style.CTO_CHAT_REPLY_PROMPT
+
+    def test_the_cto_has_its_own_chat_reply_block_and_the_others_keep_the_old_one(self):
+        self.assertEqual(CTO.count("CONVERSATIONAL REPLY (MANDATORY"), 1)
+        self.assertIn(self.CHAT.strip(), CTO)
+        self.assertNotIn(chat_style.CHAT_REPLY_PROMPT.strip(), CTO)
+        for agent in ("cao", "coo", "cmo"):
+            self.assertIn(chat_style.CHAT_REPLY_PROMPT.strip(), AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+            self.assertNotIn(self.CHAT.strip(), AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+
+    def test_it_no_longer_forbids_headings_and_lists_and_asks_for_the_protocol_layout(self):
+        self.assertNotIn("No bullet points, no headings, no markdown", self.CHAT)
+        for needle in ("COMMUNICATION PROTOCOL above", "### headings, numbered steps, **bold**", "asks the CEO to do something",
+                       "Lead with the answer or your recommendation, then why it matters, then the steps"):
+            self.assertIn(needle, self.CHAT, needle)
+
+    def test_a_simple_question_still_gets_a_short_reply(self):
+        self.assertIn("A simple question gets 2 to 4 sentences", self.CHAT)
+
+    def test_every_safeguard_of_the_old_block_is_kept_in_friendlier_words(self):
+        for needle in ("add nothing new", 'no fact, number, source or claim that "response" does not contain',
+                       "Never say or imply that you have done, sent, approved, published, deployed or changed anything",
+                       "the plan is ready for the CEO's final approval and that nothing is applied until the CEO approves it",
+                       "below 60%", 'do not add "chat_reply"'):
+            self.assertIn(needle, self.CHAT, needle)
+        for phrase in GATEKEEPER_PHRASES:
+            self.assertNotIn(phrase, self.CHAT, phrase)
+
+    def test_the_length_is_bounded_in_code_and_the_other_agents_keep_the_old_cap(self):
+        from app.agents import cao_reasoning
+
+        self.assertEqual(cto_agent.CTO_MAX_CHAT_REPLY_CHARS, 5000)
+        self.assertEqual(cao_reasoning.MAX_CHAT_REPLY_CHARS, 1200)  # CAO, COO and CMO are unchanged
+        long_reply = json.dumps({"response": "x. Recommendation for human review: y.", "chat_reply": "word " * 5000})
+        self.assertEqual(len(cao_reasoning.parse_cao_output(long_reply).chat_reply), 1200)
+        longer = cao_reasoning.parse_cao_output(long_reply, chat_reply_chars=5000).chat_reply
+        self.assertTrue(1200 < len(longer) <= 5000)
+
+    def test_a_structured_cto_reply_survives_parsing_and_vetting_whole(self):
+        from app.agents import cao_reasoning
+        from app.agents.chat_reply import vetted_chat_reply
+
+        reply = ("Happy to help. I have prepared the plan for your final approval.\n\n### Step 1\n1. Open the **Authorizations** page.\n"
+                 "2. Click **Approve**.\n\n### What to Look For\n- A pull request.\n\nNothing goes live until you approve it and it is merged.")
+        raw = json.dumps({"response": "Bottom line. Confidence: 80%. Recommendation for human review: confirm.", "reasoning_chain": ["Step 1: x"],
+                          "scenarios": None, "chat_reply": reply})
+        parsed = cao_reasoning.parse_cao_output(raw, chat_reply_chars=cto_agent.CTO_MAX_CHAT_REPLY_CHARS)
+        self.assertEqual(parsed.chat_reply, reply)
+        self.assertEqual(vetted_chat_reply(parsed.chat_reply), reply)  # the partner wording is not mistaken for claiming an action
+
+    def test_a_reply_that_claims_an_action_is_still_dropped(self):
+        from app.agents.chat_reply import vetted_chat_reply
+
+        self.assertIsNone(vetted_chat_reply("### Done\nI have deployed the fix and I sent the update."))
+
+    def test_the_json_example_and_the_authorization_schema_are_untouched(self):
+        prompt = cto_prompt.CTO_REASONING_PROMPT
+        example = json.loads(prompt[prompt.index('{\n  "response"'): prompt.index("\n}\n") + 2])
+        self.assertNotIn("chat_reply", example)
+        for needle in ("CRITICAL EXECUTION RULE", "files_to_update", "pending_human_approval", "AUTHORIZATION WORKFLOW"):
+            self.assertIn(needle, CTO, needle)
+
+
 if __name__ == "__main__":
     unittest.main()
+

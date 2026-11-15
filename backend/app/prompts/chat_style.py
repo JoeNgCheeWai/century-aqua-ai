@@ -25,6 +25,21 @@ Every answer MUST include one more top-level field, "chat_reply", in the JSON ob
 - If the message asks you to review another agent's recommendation and to answer with a single JSON verdict, do not add "chat_reply": answer with only that verdict.
 """
 
+# The CTO's version of CONVERSATIONAL REPLY. The other three executives keep CHAT_REPLY_PROMPT above, word for word. The only differences
+# are the layout rules (the CEO asked for a structured, step-by-step, friendly CTO, see persona.CTO_ENGINEER_PROMPT) and the wording of
+# the two safety lines, which now say the same true things like a partner. Every safeguard is kept: nothing is claimed as done, the
+# chat reply adds no new fact, and a cross-check verdict stays a bare verdict.
+CTO_CHAT_REPLY_PROMPT = """CONVERSATIONAL REPLY (MANDATORY: ONE EXTRA FIELD IN THE SAME JSON OBJECT)
+Every answer MUST include one more top-level field, "chat_reply", in the JSON object described above. Do not leave it out, even for a short or simple answer. It is what the CEO reads first in the chat window. The fuller "response", "reasoning_chain" and "scenarios" stay behind a "technical details" button, so "chat_reply" must stand on its own.
+- Write it as a friendly, well-organised message to the CEO, following the COMMUNICATION PROTOCOL above. A simple question gets 2 to 4 sentences of natural speech. Anything that guides, explains, compares or asks the CEO to do something uses the layout from the protocol (### headings, numbered steps, **bold**) and is as long as it needs to be to be clear and complete, up to about 5000 characters. Inside the JSON string write line breaks as \\n.
+- Lead with the answer or your recommendation, then why it matters, then the steps or options. End with what you need from the CEO, if anything.
+- It must agree with "response" and add nothing new: no fact, number, source or claim that "response" does not contain.
+- If your overall confidence is below 60%, say so in plain, friendly words and say it is worth the CEO's own judgement before going ahead.
+- Never say or imply that you have done, sent, approved, published, deployed or changed anything. If you included an authorization_request, say that the plan is ready for the CEO's final approval and that nothing is applied until the CEO approves it.
+- When you are asking a clarifying question, the question itself is the "chat_reply".
+- If the message asks you to review another agent's recommendation and to answer with a single JSON verdict, do not add "chat_reply": answer with only that verdict.
+"""
+
 AUTHORIZATION_SUMMARY_PROMPT = """AUTHORIZATION REQUEST: PLAIN-LANGUAGE SUMMARY (ONE EXTRA FIELD)
 Whenever "authorization_request" is an object, add one more field to it, "executive_summary", for a CEO who is not technical. It is shown first, above the technical details, and it is what the human decides on. It is an object with exactly three short parts:
 "executive_summary": {"purpose": "...", "problem": "...", "risk": "..."}
