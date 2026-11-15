@@ -51,16 +51,23 @@ class CtoCommunicationCodeTests(GuardedTestCase):
 
     def test_a_structured_friendly_reply_reaches_the_ceo_whole(self):
         result, _ = self.ask([text_reply(reply_with(STRUCTURED, {NEW_FILE: "export default function B() { return null; }\n"}))])
-        self.assertEqual(result.chat_reply, STRUCTURED)  # headings, numbers and bold are all still there, in order
+        # The model's own words arrive whole (headings, numbers and bold all still there, in order). Code then adds its self-check line.
+        self.assertTrue(result.chat_reply.startswith(STRUCTURED))
+        self.assertEqual(result.chat_reply[len(STRUCTURED):].split("\n\n")[1][:13], "**Self-check:")
         self.assertIsNotNone(result.authorization_request["execution_plan"])
 
+    def model_part(self, chat_reply):
+        """The model's own text: everything before the line code adds after it."""
+        return chat_reply.split("\n\n**Self-check:**")[0]
+
     def test_a_reply_longer_than_the_old_limit_is_kept_up_to_the_ctos_own_limit_and_no_further(self):
+        # The limit bounds what the MODEL writes. Code-written lines (the self-check declaration) come after it and are not the model's.
         long_text = "### Step 1\n" + "1. **Open** the page.\n" * 200  # about 4,200 characters
         result, _ = self.ask([text_reply(reply_with(long_text, {NEW_FILE: "x\n"}))])
-        self.assertGreater(len(result.chat_reply), 1200)
-        self.assertLessEqual(len(result.chat_reply), cto_agent.CTO_MAX_CHAT_REPLY_CHARS)
+        self.assertGreater(len(self.model_part(result.chat_reply)), 1200)
+        self.assertLessEqual(len(self.model_part(result.chat_reply)), cto_agent.CTO_MAX_CHAT_REPLY_CHARS)
         result, _ = self.ask([text_reply(reply_with("word " * 3000, {NEW_FILE: "x\n"}))])  # a runaway reply is cut in code
-        self.assertLessEqual(len(result.chat_reply), cto_agent.CTO_MAX_CHAT_REPLY_CHARS)
+        self.assertLessEqual(len(self.model_part(result.chat_reply)), cto_agent.CTO_MAX_CHAT_REPLY_CHARS)
 
     def test_the_other_three_executives_still_cut_their_chat_reply_at_1200(self):
         from app.agents import cao_reasoning

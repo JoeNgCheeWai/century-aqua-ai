@@ -2,7 +2,8 @@
 The CTO must READ an existing file before it proposes to change it, and this is enforced in CODE as well as asked for in the prompt.
 
 What is proven here, with a scripted model and a fake GitHub (no network):
-  * the CTO is offered exactly one tool, github_read_file, and a call to it really reads the file;
+  * the CTO is offered exactly two tools, both read-only: github_read_file (a call to it really reads the file) and
+    diagnose_boardroom_session (tested in tests/test_cto_autonomous_diagnosis.py);
   * the order of events when asked to modify a file: the read happens BEFORE the final answer, and the file text reaches the model;
   * a plan that overwrites an existing file that was NOT read is dropped (the rule is not just a request), a plan for a brand-new
     file is kept, a plan for a file it did read is kept, and an unverifiable file fails CLOSED;
@@ -90,9 +91,9 @@ class CtoReadsBeforeItWritesTests(GuardedTestCase):
             result = run(cto_agent.get_cto_result(QUERY, use_rag=False, audit=False, **kwargs))
         return result, client
 
-    def test_the_cto_is_offered_exactly_one_tool_the_read_only_file_reader(self):
+    def test_the_cto_is_offered_exactly_two_tools_both_read_only_the_file_reader_and_the_diagnostic(self):
         _, client = self.ask([text_reply(answer({}))])
-        self.assertEqual([t["name"] for t in client.calls[0]["tools"]], ["github_read_file"])
+        self.assertEqual([t["name"] for t in client.calls[0]["tools"]], ["github_read_file", "diagnose_boardroom_session"])
 
     def test_when_asked_to_modify_a_file_it_reads_the_file_BEFORE_it_produces_the_execution_plan(self):
         order = []
@@ -211,8 +212,8 @@ class TheLoopIsBoundedAndTheEndpointEnforcesItTests(GuardedTestCase):
             response = TestClient(app).post("/api/cto", headers={"X-Internal-CTO-Key": CTO_KEY}, json={"message": QUERY})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIsNone(response.json()["authorization_request"]["execution_plan"])
-        self.assertEqual([t["name"] for t in client.calls[0]["tools"]], ["github_read_file"])
-        self.assertTrue(out.getvalue().startswith("CTO tools available: ['github_read_file']"))
+        self.assertEqual([t["name"] for t in client.calls[0]["tools"]], ["github_read_file", "diagnose_boardroom_session"])
+        self.assertTrue(out.getvalue().startswith("CTO tools available: ['github_read_file', 'diagnose_boardroom_session']"))
         self.assertNotIn(TOKEN, out.getvalue())
 
     def test_a_cross_check_review_gets_no_tools_at_all(self):

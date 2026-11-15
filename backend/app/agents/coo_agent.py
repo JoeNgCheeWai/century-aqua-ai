@@ -31,7 +31,7 @@ from app.agents.cao_reasoning import parse_cao_output
 from app.agents.chat_reply import vetted_chat_reply
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
-from app.governance import strategy_store
+from app.governance import operations_log, strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import CHAT_REPLY_PROMPT
 from app.prompts.coo_prompt import COO_REASONING_PROMPT, COO_SYSTEM_PROMPT
@@ -190,6 +190,9 @@ async def get_coo_result(
     system, sources = await _build_system_prompt(query, use_rag)
     if memory:  # the learning loop: the COO's own past approved strategies that bear on this question (never raises)
         system, _ = await strategy_store.with_memory(system, AGENT_ID, query)
+        # The OPERATIONS SUMMARY: when the CEO asks for it, the COO is given the system's own exact numbers (read from the audit log, never
+        # estimated by a model). Only for a real conversation (memory=True): a cross-check review or the operational review itself gets none.
+        system, _ = await operations_log.with_facts(system, query)
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, COO_MODEL)
