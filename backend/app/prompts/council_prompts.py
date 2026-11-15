@@ -30,7 +30,7 @@ ROLE_CARDS: dict[str, str] = {
 _PREAMBLE = """Your ENTIRE reply is ONE JSON object. No text before or after it, no markdown, no code fence.
 THIS IS A STRATEGIC DISCUSSION, NOT AN ACTION. The council only discusses and aligns. Nothing is executed here: no code is written or run, no image is made, no tool is used, nothing is published or changed. Anything you propose is only a request that the human CEO decides on later.
 LENGTH: be concise but thorough enough to address the question and the previous speakers' points. Plain words, no padding. The reply is cut off at a hard size limit, so a complete JSON object matters more than a long one.
-THINK BEFORE YOU SPEAK. Fill "reasoning" FIRST, as your private working (it sits behind a toggle; the CEO reads what you say aloud): the real problem behind the question, the 2 or 3 options you weighed, and the one you recommend and why, with its risks and constraints. Then write what you say aloud from that thinking."""
+THINK BEFORE YOU SPEAK. Fill "reasoning" FIRST with your analysis: the real problem behind the question, the 2 or 3 options you weighed, and the one you recommend and why, with its risks and constraints. Then write your position from that analysis."""
 
 _SHARED_FIELDS = """ "stance": "support" | "oppose" | "conditional",
  "position": "<POSITION_HINT>",
@@ -79,7 +79,7 @@ Example of a complete valid reply:
 DELIBERATION_CARD = (
     "BOARDROOM RULES: this is a purely strategic discussion to reach alignment. Nothing is executed here: no code, no images, no "
     "tools, no external actions. Be concise but thorough enough to address the previous speakers' points. Think in your "
-    "private \"reasoning\" first, then speak. When others have spoken, acknowledge and evaluate their specific points: if you agree, add "
+    "the \"reasoning\" field first, then speak. When others have spoken, acknowledge and evaluate their specific points: if you agree, add "
     "a new operational, technical or biological layer; if you disagree, say exactly which part and offer a cohesive alternative that "
     "solves the CEO's problem."
 )
