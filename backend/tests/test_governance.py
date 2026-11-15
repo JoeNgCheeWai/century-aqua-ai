@@ -79,7 +79,7 @@ class ConstitutionTests(unittest.TestCase):
         self.assertLess(prompt.index("CLAUSE 0"), prompt.index("ROLE: you are the CAO."))
         self.assertLess(prompt.index("ROLE: you are the CAO."), prompt.index("EXTRA CONTEXT"))
         self.assertIn("Recommendation for human review:", prompt)
-        self.assertIn("ESCALATE TO HUMAN:", prompt)
+        self.assertIn("Recommendation for CEO review:", prompt)
 
 
 class ScoringTests(unittest.TestCase):
@@ -103,7 +103,11 @@ class ScoringTests(unittest.TestCase):
     def test_low_confidence_without_escalation_is_penalised_and_with_it_is_not(self):
         low = "Reasoning: limited evidence, sources: general knowledge. Confidence: 40%.\n\nRecommendation for human review: gather data."
         self.assertTrue(any("Clause 11" in f for f in scoring.score_response(low).findings))
+        self.assertEqual(scoring.score_response("Recommendation for CEO review: low confidence.\n" + low).score, 100)
+        # An answer that still opens with the OLD wording is scored the same (older stored answers, or a model that still writes it).
         self.assertEqual(scoring.score_response("ESCALATE TO HUMAN: low confidence.\n" + low).score, 100)
+        # The closing line is not an opening escalation: it must never satisfy the low-confidence rule by itself.
+        self.assertFalse(scoring.score_response(low).escalated)
 
     def test_score_is_always_in_range_even_for_empty_text(self):
         for text in ("", None, "x" * 100000):

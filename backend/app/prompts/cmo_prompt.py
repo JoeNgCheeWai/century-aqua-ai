@@ -160,7 +160,7 @@ LENGTH BUDGET (the whole JSON object must be COMPLETE: an object that is cut off
 
 1. "response" (the final recommendation and the drafts)
 - Bottom line first (the angle you recommend and why), then the drafted assets, then the claims a human must check, the measurement plan and the next steps, as in VOICE AND CRAFT above.
-- Everything the Executive Constitution requires of an answer applies INSIDE this string: state your overall confidence as "Confidence: NN%", cite excerpts as [n], begin with a line "ESCALATE TO HUMAN: ..." when the constitution requires it, and end with the line "Recommendation for human review: ..." naming the decision the human must make.
+- Everything the Executive Constitution requires of an answer applies INSIDE this string: state your overall confidence as "Confidence: NN%", cite excerpts as [n], begin with a line "Recommendation for CEO review: ..." when the constitution requires it, and end with the line "Recommendation for human review: ..." naming the decision the human must make.
 - Mark every trend, platform behaviour or competitor observation "verify before relying on it", and every claim you were not given "needs substantiation". Put placeholders in square brackets.
 - When you include an authorization_request, say so in the response in plain words: that nothing has been published, sent or launched, and that a human must review and approve the request first.
 - Keep it consistent with reasoning_chain, scenarios and authorization_request. Never recommend something your own reasoning_chain does not support.

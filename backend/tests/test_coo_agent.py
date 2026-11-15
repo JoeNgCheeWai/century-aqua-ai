@@ -46,7 +46,7 @@ TEST_AGENT = "testbot"
 COO_ANSWER = {
     "response": (
         "Bottom line: SUPPORTED WITH CONDITIONS. Do not commit capital before a gated pilot. Confidence: 58%.\n\n"
-        "ESCALATE TO HUMAN: this is a high-stakes capital decision and my overall confidence is below 60%.\n\n"
+        "Recommendation for CEO review: this is a high-stakes capital decision and my overall confidence is below 60%.\n\n"
         "Stress test of the CAO plan\n"
         "- Plan restated: expand into offshore salmon farming, as the CAO recommends [1].\n"
         "- Financial viability: capital is not sized anywhere in the CAO's text, so the plan is not yet assessable.\n"

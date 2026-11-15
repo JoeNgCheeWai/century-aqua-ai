@@ -56,7 +56,7 @@ class TheCountsAreExactTests(unittest.TestCase):
     def test_an_empty_log_says_nothing_was_approved_without_the_ceo(self):
         text = ol.summary_text(facts([]))
         self.assertIn("has not reviewed any small task", text)
-        self.assertIn("still waiting for your decision", text)
+        self.assertIn("still yours to approve", text)
 
     def test_the_by_agent_counts_and_the_item_list_are_bounded(self):
         many = facts([row(i, "coo_approved", status="succeeded", agent="cmo" if i % 2 else "cto") for i in range(60)])

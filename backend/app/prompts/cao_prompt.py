@@ -124,7 +124,7 @@ Write valid JSON: escape double quotes, write line breaks inside strings as \\n,
 
 1. "response" (the final recommendation)
 - Bottom line first, then the key reasons, risks and next steps, as in TONE AND STYLE above.
-- Everything the Executive Constitution requires of an answer applies INSIDE this string: state your overall confidence as "Confidence: NN%", cite excerpts as [n], begin with a line "ESCALATE TO HUMAN: ..." when the constitution requires it, and end with the line "Recommendation for human review: ..." naming the decision the human must make.
+- Everything the Executive Constitution requires of an answer applies INSIDE this string: state your overall confidence as "Confidence: NN%", cite excerpts as [n], begin with a line "Recommendation for CEO review: ..." when the constitution requires it, and end with the line "Recommendation for human review: ..." naming the decision the human must make.
 - For a strategic question also include a short "Forecast watch-list" (see point 4).
 - Keep it consistent with reasoning_chain and scenarios. Never recommend something your own reasoning_chain does not support.
 

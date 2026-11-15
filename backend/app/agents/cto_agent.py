@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
-from app.agents import diagnostics, operational_approval, plan_checks, tools
+from app.agents import diagnostics, language_guard, operational_approval, plan_checks, tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -433,8 +433,17 @@ async def get_cto_result(
         model_text += "\n\n" + "\n".join(parsed.reasoning_chain)
     score = score_response(model_text)
 
-    text = parsed.response
-    chat_text = parsed.chat_reply
+    # THE LANGUAGE GUARD (language_guard.py): the model's own words are relabelled ("ESCALATE TO HUMAN" -> "Recommendation for CEO review",
+    # "Waiting for your decision" -> "Ready for your approval") and any sentence that hands a routine task to "a technical person" is removed.
+    # The score above was computed on the model's raw words, and it accepts both labels, so scoring is unaffected. Code-written notes below are
+    # added AFTER this, so they are never touched. A deflecting sentence that carries a command is kept and logged, never silently lost.
+    text, removed_text, kept_text = language_guard.clean(parsed.response)
+    chat_text, removed_chat, kept_chat = language_guard.clean(parsed.chat_reply)
+    if removed_text or removed_chat:
+        format_findings.append("language guard removed a deflection to someone else: " + " | ".join((removed_text + removed_chat)[:3]))
+    if kept_text or kept_chat:
+        format_findings.append("language guard kept a deflecting sentence because it carries a command: " + " | ".join((kept_text + kept_chat)[:2]))
+    text = text or ""
     if plan_dropped:
         # The model may have told the CEO a plan is ready, but code dropped it (it would overwrite a file that was not read first). The
         # friendly wording must never promise something that no longer exists, so code adds the truth, in the same friendly voice.
@@ -498,13 +507,17 @@ async def get_cto_result(
     # COO-LED APPROVAL (ships OFF: COO_AUTO_APPROVAL). A small task code classifies as "Safe to Implement" goes to the COO for review and,
     # if the COO says yes to integrity, safe and fully reported, is approved under the CEO's delegation. Anything else waits for the CEO.
     # Runs only now, because the task needs its audit row. Never raises. The note is added to what the CEO reads, written by code.
+    note = ""
     if audit_id is not None and authorization_request is not None:
         routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request, originals=outcome.texts)
         note = operational_approval.approval_note(routed)
-        if note:
-            text += "\n\n" + note
-            if chat_text and chat_text.strip():
-                chat_text = chat_text.rstrip() + "\n\n" + note
+    if authorization_request is not None and not note:
+        # Not routed to the COO (the switch is off, or it was not eligible): the CEO still reads the same collaborative line, in code.
+        note = language_guard.ready_note(bool(authorization_request.get("execution_plan")))
+    if note:
+        text += "\n\n" + note
+        if chat_text and chat_text.strip():
+            chat_text = chat_text.rstrip() + "\n\n" + note
     return CTOResult(
         reply=text,
         constitutional_score=score.score,

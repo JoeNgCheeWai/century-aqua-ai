@@ -298,7 +298,7 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("COO-approved under your delegation", approved)
         self.assertIn("It is not live", approved)
         self.assertIn("pull/3", approved)
-        self.assertIn("Waiting for your decision", oa.approval_note({"route": "ceo_required", "message": "Not on the safe list."}))
+        self.assertIn("Ready for your approval", oa.approval_note({"route": "ceo_required", "message": "Not on the safe list."}))
         self.assertEqual(oa.approval_note(None), "")
         self.assertIn("could not be opened", oa.approval_note({"route": "coo_approved", "pr_url": None}))
 
