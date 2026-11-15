@@ -16,10 +16,11 @@ from app.agents.cao_reasoning import parse_cao_output
 from app.agents.chat_reply import vetted_chat_reply
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
+from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.cao_prompt import CAO_REASONING_PROMPT, CAO_SYSTEM_PROMPT
 from app.prompts.chat_style import CHAT_REPLY_PROMPT
-from app.prompts.persona import persona_block
+from app.prompts.persona import expert_role, persona_block, thinking_process
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,11 @@ AGENT_ID = "cao"
 # The CAO's role prompt plus the Phase 1 reasoning and prediction format (cao_prompt.py).
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution), so they set
 # the tone for everything below them. They change how the CAO speaks, not the JSON format or any other rule.
-CAO_ROLE_PROMPT = persona_block("cao") + "\n\n" + CAO_SYSTEM_PROMPT + "\n\n" + CAO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+# Then the proactive-consultant role and the Strategic Thinking Process (its three steps go inside the existing reasoning_chain).
+CAO_ROLE_PROMPT = (
+    persona_block("cao") + "\n\n" + expert_role("cao") + "\n\n" + thinking_process("cao") + "\n\n"
+    + CAO_SYSTEM_PROMPT + "\n\n" + CAO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+)
 
 # The constitution comes FIRST, then the CAO's own role prompt (Executive Constitution, Clause 0).
 BASE_SYSTEM_PROMPT = build_system_prompt(CAO_ROLE_PROMPT)
@@ -147,6 +152,7 @@ async def get_cao_result(
     audit: bool = True,
     user_id: str = "unknown",
     model_tier: str | None = None,
+    memory: bool = True,
 ) -> CAOResult:
     """
     Generate a strategic AI_CAO response and record it for accountability.
@@ -178,6 +184,8 @@ async def get_cao_result(
     messages.append({"role": "user", "content": query})
 
     system, sources = await _build_system_prompt(query, use_rag)
+    if memory:  # the learning loop: the CAO's own past approved strategies that bear on this question (never raises)
+        system, _ = await strategy_store.with_memory(system, AGENT_ID, query)
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, CAO_MODEL)
@@ -251,4 +259,4 @@ async def get_cao_answer(
     user_id: str = "unknown",
 ) -> str:
     """The CAO's reply text (see get_cao_result for the governance details)."""
-    return (await get_cao_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id)).reply
+    return (await get_cao_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id, memory=False)).reply

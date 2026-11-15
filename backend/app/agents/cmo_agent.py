@@ -38,10 +38,11 @@ from app.agents.chat_reply import vetted_chat_reply
 from app.agents.cmo_authorization import audit_summary, normalize_authorization_request
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
+from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CMO_UI_PROMPT
 from app.prompts.cmo_prompt import CMO_REASONING_PROMPT, CMO_SYSTEM_PROMPT
-from app.prompts.persona import persona_block
+from app.prompts.persona import expert_role, persona_block, thinking_process
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ AGENT_ID = "cmo"
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution). The
 # authorization workflow, the generate_image tool text and the JSON format below are unchanged.
 CMO_ROLE_PROMPT = (
-    persona_block("cmo") + "\n\n" + CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    persona_block("cmo") + "\n\n" + expert_role("cmo") + "\n\n" + thinking_process("cmo") + "\n\n" + CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CMO_UI_PROMPT
 )
 
@@ -227,6 +228,7 @@ async def get_cmo_result(
     user_id: str = "unknown",
     model_tier: str | None = None,
     images: bool = True,
+    memory: bool = True,
 ) -> CMOResult:
     """
     Generate an AI_CMO response and record it for accountability.
@@ -263,6 +265,8 @@ async def get_cmo_result(
     messages.append({"role": "user", "content": query})
 
     system, sources = await _build_system_prompt(query, use_rag)
+    if memory:  # the learning loop: the CMO's own past approved strategies that bear on this question (never raises)
+        system, _ = await strategy_store.with_memory(system, AGENT_ID, query)
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, CMO_MODEL)
@@ -366,5 +370,5 @@ async def get_cmo_answer(
     (cross_validation.cross_check) can ask the CMO to review another agent's recommendation for brand, message
     and reputational risk. See get_cmo_result for the governance details.
     """
-    return (await get_cmo_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id, images=False)).reply
+    return (await get_cmo_result(query, history, use_rag=use_rag, audit=audit, user_id=user_id, images=False, memory=False)).reply
 

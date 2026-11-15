@@ -286,3 +286,25 @@ model AdminAuditLog {
   @@index([timestamp])
   @@index([actorId, timestamp])
 }
+
+// The learning loop: a strategy the CEO APPROVED, saved so the executive that proposed it can recall it later as past experience.
+// Written by backend/app/governance/strategy_store.py when POST /api/authorization/{id}/approve records an approval, and read back
+// into the same agent's prompt as untrusted reference data. NOTHING here is a decision, an instruction or an authorization: it is a
+// short summary of what a human already decided. Rows are only ever added (never edited), and a row is tied to the audit entry it
+// came from, so approving the same entry twice cannot save it twice.
+model ApprovedStrategies {
+  id              Int      @id @default(autoincrement())
+  // The executive role that proposed it: cao, coo, cto or cmo.
+  agentRole       String
+  // A short plain-language summary of the approved strategy (the request's action summary).
+  strategySummary String
+  // Why it was proposed and what it covered: the question that led to it and the impact the agent stated. Plain text.
+  context         String
+  // The AgentAuditLog row this came from (NOT a foreign key: audit rows are never deleted, and a memory must survive a reset).
+  auditLogId      Int?     @unique
+  // Who approved it (the X-Admin-Id of the decision).
+  approvedBy      String?
+  createdAt       DateTime @default(now())
+
+  @@index([agentRole, createdAt])
+}
