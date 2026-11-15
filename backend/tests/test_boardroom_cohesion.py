@@ -120,7 +120,10 @@ class CohesionPromptTests(unittest.TestCase):
         for contract in (prompts.TURN_CONTRACT, prompts.CROSS_RESPONSE_CONTRACT):
             self.assertIn("THINK BEFORE YOU SPEAK", contract)
             self.assertIn('"reasoning"', contract)
-            self.assertIn("sits behind a toggle", contract)  # the existing UI toggle
+            # The reasoning stays out of the main view because the SCREEN puts it behind the toggle. The prompt must NOT ask the model to
+            # hide it: the real model refused exactly that wording (see test_boardroom_session_validation.py).
+            self.assertNotIn("behind a toggle", contract)
+            self.assertIn("with your analysis", contract)
         self.assertLess(prompts.TURN_CONTRACT.index('"reasoning"'), prompts.TURN_CONTRACT.index('"stance"'))  # reasoning comes first
 
     def test_the_thinking_process_is_the_same_three_steps_as_the_solo_agents(self):

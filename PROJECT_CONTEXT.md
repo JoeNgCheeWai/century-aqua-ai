@@ -831,7 +831,28 @@ No database and no real model: a scripted fake model stands in for Anthropic, an
 
 **Tests.** `test_boardroom_cohesion.py` (42: token limits sent to the API, prompts, the round, merge safety, progress, Debate tab labels), `test_boardroom_storage_sql.py` (4, real Postgres), and the existing council tests updated for the new round. Six mutations (cap back to 600, round never runs, merge replaced by replace, an answer-nobody turn accepted, revisions without the rules, no budget check) each fail tests.
 
-**Limits, honestly.** (1) No real-model run has checked the new prompts: the tests prove the text, the limits and the code paths, not that the model writes good reasoning or real disagreement; run one live session after merge and read the Debate tab. (2) More thinking means more cost: a healthy 4-agent session is now 11 model calls instead of 7, and each agent reply may be far longer than the old 150-word one. The real token and money cost has NOT been measured; check the first live sessions in the Debate tab (it shows tokens per turn). (3) The phase is in memory on one server, so after a restart the page shows a generic message. (4) The cross-response only compares positions as text: it cannot verify a claim. (5) Existing sessions have no reasoning and no round 7.
+**Limits, honestly.** (1) *Update: this was wrong in practice. The first production run of this upgrade FAILED, see "The refusal outage" below. A real-model run is now part of the checks (`scripts/try_boardroom_session.py`).* The tests prove the text, the limits and the code paths, not that the real model accepts the prompt or writes good reasoning. (2) More thinking means more cost: a healthy 4-agent session is now 11 model calls instead of 7, and each agent reply may be far longer than the old 150-word one. The real token and money cost has NOT been measured; check the first live sessions in the Debate tab (it shows tokens per turn). (3) The phase is in memory on one server, so after a restart the page shows a generic message. (4) The cross-response only compares positions as text: it cannot verify a claim. (5) Existing sessions have no reasoning and no round 7.
+
+
+### The refusal outage ("only 0 usable proposals") and its fix
+
+**What happened.** The first production Boardroom session after the deep-thinking upgrade ended `FAILED`: "only 0 usable proposals (need 2, including COO who chairs)", in 4 seconds and 3 calls.
+
+**Root cause.** Not the parser, the schema, the COO chair check or a token limit. Run against the real model, every round-1 call returned `stop_reason="refusal"` with 1 output token and no text, in about a second: the model **declined the prompt**. A bisect over the real model (the old prompt answered, the new one was refused, then one sentence at a time) found the trigger: the turn contract told each agent to write its reasoning as "your private working (it sits behind a toggle ...)", a request to hide its thinking from the reader. Removing just that phrase (keeping the reasoning field, the 3 steps and the cross-response) made every call succeed with valid JSON and reasoning. Repeating each variant twice ruled out luck.
+
+**Why nothing caught it.** The unit tests use a scripted model, which can never refuse, and the session reported only a count ("0 usable") that looked like a parsing failure. A refusal and an empty reply look identical to the parser.
+
+**The fix.**
+- The prompt asks for the reasoning as an **analysis** ("Fill reasoning FIRST with your analysis ..."), with no request to hide it. The screen, not the model, keeps it out of the main view (the UI toggle). The solo agents were checked live and were never affected: their thinking-process wording asks for a reasoning chain without calling it private.
+- A refusal is now **logged as a refusal** (`stop_reason=refusal`, "not a JSON or token-limit problem") instead of passing as an empty reply.
+- The failure message now says **why**: how many calls errored or timed out, how many replies were refused, cut off at the token cap, or not valid JSON proposals. Counts only, never model text. The stop reason is kept in memory on the turn and never stored.
+- The COO chair check is unchanged and correct: a session still needs the chair among the usable proposals. It is now tested directly.
+
+**Tests.** `test_boardroom_session_validation.py` (19): the refused wording must never return in any council prompt; a scripted refusal is diagnosed; a session where every call is refused fails with the reason; a model that refuses only that wording fails with the old prompt and resolves with the fixed one; the reply a real model produced parses; the reasoning field missing or malformed does not make a proposal unusable; a whole session with the new structure accepts every proposal and cross-response; the chair is validated. Five mutations (the wording back, no diagnosis, refusal not logged, chair check removed, stop reason dropped) each fail tests. The old test that pinned "sits behind a toggle" now pins its absence.
+
+**Verified live (real model).** One round-1 turn per seat (all four valid, about 8 s each, about 750 tokens). Whole sessions: 3 seats reached `NEEDS_CEO_INPUT` (the COO ruled two facts critical, which is the governance working), 4 seats reached `NEEDS_CEO_INPUT`, 2 seats reached `RESOLVED`; none logged a refusal. `scripts/try_boardroom_turn.py` shows one turn per seat and `scripts/try_boardroom_session.py` a whole session; run them after any change to a council prompt.
+
+**Still true.** A model can refuse any prompt for reasons we cannot see. A refused round-1 turn still costs the session that agent, and if the chair's is refused the session fails, but it now says so.
 
 ---
 

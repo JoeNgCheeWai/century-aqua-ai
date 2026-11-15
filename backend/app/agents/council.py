@@ -306,6 +306,11 @@ async def call_model(system: str, user: str, *, max_tokens: int, budget: Budget,
     if stop_reason == "max_tokens":
         truncated = True
     thinking_tokens = getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", 0) or 0
+    if stop_reason == "refusal":
+        # The model declined to answer (a safety classifier, not a parsing problem). It looks exactly like an empty reply, so say so:
+        # the first production failure of the cross-response upgrade was three of these, reported only as "0 usable proposals".
+        logger.error("council model REFUSED to answer (stop_reason=refusal, output_tokens=%s, prompt chars=%d). This is not a JSON or "
+                     "token-limit problem: look at the wording of the prompt.", out_tokens, len(system) + len(user))
     if not text.strip():
         # No text at all: say WHY, so a thinking model eating the cap can never again look like "a model that
         # returned nothing". The turn is then dropped by the caller (an empty reply is not a valid proposal).
@@ -623,6 +628,7 @@ async def _agent_turn(s: Session, agent_id: str, round_no: int, user: str, *, cr
             return turn
     else:
         turn = normalize_turn(agent_id, reply.text)
+    turn["stop_reason"] = reply.stop_reason  # in memory only (never stored): lets the session say WHY nothing was usable
     _log_turn(s, round_no, turn, reply)
     return turn
 
@@ -643,8 +649,25 @@ async def _round1_proposals(s: Session) -> list[dict[str, Any]]:
         turns.append(result)
     valid = [t for t in turns if t["valid"]]
     if len(valid) < 2 or s.chair not in {t["agent_id"] for t in valid}:
-        raise _Halt("FAILED", f"only {len(valid)} usable proposals (need 2, including {s.chair.upper()} who chairs)")
+        raise _Halt("FAILED", f"only {len(valid)} usable proposals (need 2, including {s.chair.upper()} who chairs)" + why_unusable(turns, results))
     return valid
+
+
+def why_unusable(turns: list[dict[str, Any]], results: list[Any]) -> str:
+    """
+    A short, honest reason for "too few usable proposals", so the CEO and the operator are not left with a bare count: how many calls
+    errored or timed out, how many replies the model REFUSED, how many came back empty or cut off, and how many were not readable.
+    Counts only, never any model text.
+    """
+    errored = sum(1 for r in results if isinstance(r, BaseException))
+    bad = [t for t in turns if not t["valid"]]
+    refused = sum(1 for t in bad if t.get("stop_reason") == "refusal")
+    cut_off = sum(1 for t in bad if t.get("stop_reason") == "max_tokens")
+    unreadable = len(bad) - refused - cut_off
+    parts = [(errored, "call(s) failed or timed out"), (refused, "reply(ies) refused by the model"),
+             (cut_off, "reply(ies) cut off at the token cap"), (unreadable, "reply(ies) were not valid JSON proposals")]
+    detail = "; ".join(f"{n} {label}" for n, label in parts if n)
+    return f" ({detail})" if detail else ""
 
 
 def merge_cross_turn(initial: dict[str, Any], cross: dict[str, Any]) -> dict[str, Any]:
