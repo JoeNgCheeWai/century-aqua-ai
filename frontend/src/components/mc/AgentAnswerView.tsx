@@ -60,7 +60,7 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
 
       {hasInternals && (
         <details className="group rounded-lg border border-slate-800 bg-black/20">
-          <summary className="cursor-pointer select-none list-none rounded-lg px-3 py-2 text-xs text-cyan-300 hover:bg-cyan-400/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 [&::-webkit-details-marker]:hidden">
+          <summary className="cursor-pointer select-none list-none rounded-lg px-3 py-2 text-sm text-cyan-300 hover:bg-cyan-400/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 [&::-webkit-details-marker]:hidden">
             <span aria-hidden="true" className="mr-1.5 inline-block transition-transform group-open:rotate-90">
               ▸
             </span>
