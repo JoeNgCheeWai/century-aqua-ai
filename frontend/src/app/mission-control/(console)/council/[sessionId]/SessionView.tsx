@@ -6,6 +6,7 @@ import CouncilOptions from "@/components/mc/CouncilOptions";
 import DebateFlow from "@/components/mc/DebateFlow";
 import { Badge, Card, ErrorNote, Json, PageTitle, SectionTitle, Spinner, StatusBadge, buttonGhost } from "@/components/mc/ui";
 import { useCouncilPoll, when } from "@/lib/mc-client";
+import { phaseMessage } from "@/lib/mc-boardroom";
 
 type Tab = "outcome" | "debate" | "audit";
 
@@ -50,7 +51,7 @@ export default function SessionView({ sessionId }: { sessionId: string }) {
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <StatusBadge status={session.status} />
-        {running && <Spinner label="In session. This page refreshes every 3 seconds." />}
+        {running && <Spinner label={`${phaseMessage(session.phase)} This page refreshes every 3 seconds.`} />}
         <span className="text-xs text-slate-500">Started {when(session.started_at)}</span>
         {seconds !== null && <span className="text-xs text-slate-500">took {seconds}s</span>}
         {session.model_calls != null && !running && <span className="text-xs text-slate-500">{session.model_calls} model calls</span>}

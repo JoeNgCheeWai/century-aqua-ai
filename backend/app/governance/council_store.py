@@ -88,6 +88,26 @@ def split_questions(value: Any) -> dict[str, list[str]]:
     return {"critical": [], "open": [], "agent_flagged": []}
 
 
+_columns_ready = False  # True once CouncilTurnLog is known to have reasoning and responses (never flips back)
+
+
+def _has_turn_detail_columns(cur: Any) -> bool:
+    """
+    Has the add_council_turn_reasoning migration been applied? The finish step must work on a database that has not had it yet
+    (a deploy can reach production before its migration does), so the two new columns are written ONLY when they exist, and a
+    session is never left RUNNING because of them. Only a positive answer is cached.
+    """
+    global _columns_ready
+    if _columns_ready:
+        return True
+    cur.execute(
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'CouncilTurnLog' "
+        "AND column_name IN ('reasoning', 'responses') AND table_schema = current_schema()"
+    )
+    _columns_ready = int(cur.fetchone()[0]) == 2
+    return _columns_ready
+
+
 def _finish_sync(session_id: str, result: dict[str, Any]) -> None:
     j = db.json_param
     questions = question_record(result)
@@ -116,24 +136,26 @@ def _finish_sync(session_id: str, result: dict[str, Any]) -> None:
                 "RUNNING",  # never overwrite a row the orphan rule already closed
             ),
         )
+        detail = _has_turn_detail_columns(cur)
         for turn in result["turns"]:
-            cur.execute(
-                'INSERT INTO "CouncilTurnLog" ("id","sessionId","round","agentId","position","hardConstraints",'
-                '"confidence","sourcesCited","auditLogId","tokensUsed","timestamp") '
-                "VALUES (gen_random_uuid()::text,%s,%s,%s,%s,CAST(%s AS jsonb),%s,CAST(%s AS text[]),%s,%s,%s)",
-                (
-                    session_id,
-                    turn["round"],
-                    turn["agent_id"],
-                    turn["position"][:2000],
-                    None if not turn["hard_constraints"] else j(turn["hard_constraints"]),
-                    turn["confidence"],
-                    db.text_array_param(turn["sources_cited"]),
-                    turn["audit_log_id"],
-                    turn["tokens_used"],
-                    _now(),
-                ),
-            )
+            params = [
+                session_id,
+                turn["round"],
+                turn["agent_id"],
+                turn["position"][:2000],
+                None if not turn["hard_constraints"] else j(turn["hard_constraints"]),
+                turn["confidence"],
+                db.text_array_param(turn["sources_cited"]),
+                turn["audit_log_id"],
+                turn["tokens_used"],
+                _now(),
+            ]
+            columns, values = '"id","sessionId","round","agentId","position","hardConstraints","confidence","sourcesCited","auditLogId","tokensUsed","timestamp"', "gen_random_uuid()::text,%s,%s,%s,%s,CAST(%s AS jsonb),%s,CAST(%s AS text[]),%s,%s,%s"
+            if detail:
+                columns += ',"reasoning","responses"'
+                values += ",%s,CAST(%s AS jsonb)"
+                params += [(turn.get("reasoning") or None) and turn["reasoning"][:2000], j(turn["responses"]) if turn.get("responses") else None]
+            cur.execute(f'INSERT INTO "CouncilTurnLog" ({columns}) VALUES ({values})', params)
 
 
 async def finish_session(session_id: str, result: dict[str, Any]) -> None:

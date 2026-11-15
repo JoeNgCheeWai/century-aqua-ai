@@ -35,6 +35,7 @@ QUERY = "Should we launch the new customer portal this quarter?"
 def turn(stance="support", position="Proceed with care.", confidence=70, constraints=None, missing=None,
          action=None, objections=None):
     return json.dumps({
+        "reasoning": "The real problem, the options weighed, the best path.",
         "stance": stance, "position": position, "hard_constraints": constraints or [], "confidence": confidence,
         "sources": [], "objections": objections or [], "missing_critical_data": missing or [],
         "proposed_action": action,
@@ -61,12 +62,31 @@ def moderation(conflicts=None, vetoes=None, revise=None, critical=None, on_topic
                        "critical_data_required": critical or [], "revise": revise or [], "notes": "Chair notes."})
 
 
+def cross_reply(user, base=None, verdict="agree", responses=None, **override):
+    """
+    A valid cross-response: one answer to every executive whose initial position is shown in the prompt (or ``responses``). By default
+    the agent LISTENED AND KEPT ITS POSITION: it echoes ``base`` (its own round-1 reply), so a test that is about something else sees
+    the same stances, constraints and flagged questions it would have seen before the cross-response round existed.
+    """
+    import re
+
+    shown = re.findall(r"\[(CAO|COO|CTO|CMO)\] stance=", user) or ["CAO", "COO", "CTO", "CMO"]  # no prompt given: answer everyone
+    answers = responses if responses is not None else [
+        {"to": a.lower(), "their_point": f"{a}'s point", "verdict": verdict, "evaluation": "It holds.",
+         "adds_or_alternative": f"Add a monitoring step to {a}'s idea."} for a in shown]
+    reply = {**json.loads(base or turn()), "responses": answers, "reasoning": "Weighed each position."}
+    reply.update(override)
+    return json.dumps(reply)
+
+
 class FakeModel:
     """Scripted stand-in for AsyncAnthropic. ``turns`` maps agent id to replies (the last one repeats)."""
 
     def __init__(self, turns=None, mod=None, synth=None, red=None, delay=0.0, text_override=None, usage=(50, 50),
-                 thinking_only=False, stop_reason="end_turn"):
+                 thinking_only=False, stop_reason="end_turn", cross=None):
         self.turns = {a: list(v if isinstance(v, list) else [v]) for a, v in (turns or {}).items()}
+        self.cross = cross or {}  # agent id -> the exact text of its cross-response (default: a valid answer to everyone shown)
+        self.initial = {}  # agent id -> the text of its round-1 reply, which the default cross-response echoes
         self.mod, self.synth, self.red = mod or moderation(), synth or synthesis(), red or red_team()
         self.delay, self.text_override, self.usage = delay, text_override, usage
         # thinking_only: behave like claude-sonnet-5-5 with thinking ON, which spent the whole cap on an empty
@@ -82,6 +102,8 @@ class FakeModel:
             return "synthesis"
         if "RED TEAM" in user:
             return "red_team"
+        if "COUNCIL CROSS-RESPONSE" in user:
+            return "cross"
         return "revision" if "THE CHAIR ASKS YOU" in user else "turn"
 
     async def _create(self, **kw):
@@ -105,9 +127,13 @@ class FakeModel:
             text = self.synth
         elif kind == "red_team":
             text = self.red
+        elif kind == "cross":
+            text = self.cross.get(agent) or cross_reply(user, base=self.initial.get(agent))
         else:
             queue = self.turns.get(agent) or [turn()]
             text = queue.pop(0) if len(queue) > 1 else queue[0]
+            if kind == "turn":
+                self.initial.setdefault(agent, text)
         if self.thinking_only and kw.get("thinking") != {"type": "between_tools"}:
             # Exactly what the real API returned: one EMPTY thinking block, all of max_tokens spent thinking.
             return SimpleNamespace(
@@ -158,9 +184,10 @@ class HappyPathTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(opt["most_likely_failure_mode"])
         self.assertEqual(len(result["red_team_findings"]), len(result["options"]))
         self.assertEqual(model.kinds()[:4], ["turn"] * 4)
+        self.assertEqual(model.kinds()[4:8], ["cross"] * 4)  # everyone answers everyone before the chair moderates
         self.assertIn("moderation", model.kinds())
         self.assertEqual(model.kinds()[-2:], ["synthesis", "red_team"])
-        self.assertLessEqual(result["model_calls"], 10)
+        self.assertLessEqual(result["model_calls"], council.MAX_CALLS)
         self.assertFalse(result["executed"])
 
     async def test_each_call_carries_clause_17_and_a_compact_prompt(self):
@@ -438,14 +465,15 @@ class TurnCapTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply.output_tokens, council.TURN_MAX_TOKENS)
         self.assertEqual(budget.output_tokens, council.TURN_MAX_TOKENS)  # charged at the cap, not 5000
 
-    async def test_the_api_cap_is_600_for_turns_and_1200_for_chair_turns_not_the_solo_16384(self):
+    async def test_the_api_cap_is_2048_for_turns_3072_for_the_cross_response_and_1200_for_chair_turns_not_the_solo_16384(self):
         model = FakeModel()
         await run(model)
         for call in model.calls:
-            expected = council.TURN_MAX_TOKENS if call["kind"] in ("turn", "revision") else council.CHAIR_MAX_TOKENS
-            self.assertEqual(call["max_tokens"], expected)
+            expected = {"turn": council.TURN_MAX_TOKENS, "revision": council.TURN_MAX_TOKENS, "cross": council.CROSS_MAX_TOKENS}.get(
+                call["kind"], council.CHAIR_MAX_TOKENS)
+            self.assertEqual(call["max_tokens"], expected, call["kind"])
             self.assertLess(call["max_tokens"], 16384)
-        self.assertEqual((council.TURN_MAX_TOKENS, council.CHAIR_MAX_TOKENS), (600, 1200))
+        self.assertEqual((council.TURN_MAX_TOKENS, council.CROSS_MAX_TOKENS, council.CHAIR_MAX_TOKENS), (2048, 3072, 1200))
 
     async def test_a_session_whose_model_always_returns_5000_tokens_cannot_resolve_and_stays_bounded(self):
         model = FakeModel(text_override="y" * 20000, usage=(100, 5000))
@@ -457,19 +485,20 @@ class TurnCapTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BudgetTests(unittest.IsolatedAsyncioTestCase):
-    def test_budget_refuses_the_eleventh_call_and_never_overspends(self):
+    def test_budget_refuses_the_call_after_the_ceiling_and_never_overspends(self):
         b = council.Budget()
-        for _ in range(10):
+        for _ in range(council.MAX_CALLS):
             b.reserve()
         with self.assertRaises(council.BudgetExceeded):
             b.reserve()
-        self.assertEqual(b.calls, 10)
+        self.assertEqual(b.calls, council.MAX_CALLS)
+        self.assertEqual(council.MAX_CALLS, 16)
 
     def test_budget_keeps_the_reserved_calls_for_synthesis_and_red_team(self):
-        b = council.Budget(calls=8)
+        b = council.Budget(calls=council.MAX_CALLS - 2)
         with self.assertRaises(council.BudgetExceeded):
             b.reserve(1, keep=council.RESERVED_CALLS)  # a revision may not eat the last two calls
-        self.assertEqual(b.calls, 8)
+        self.assertEqual(b.calls, council.MAX_CALLS - 2)
 
     def test_input_and_output_tokens_are_capped_separately(self):
         b = council.Budget(max_input=1000, max_output=100)
@@ -491,11 +520,11 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(result["model_calls"], 7)
         self.assertIsNone(result["options"])
 
-    async def test_a_full_four_agent_session_stays_inside_ten_calls_and_the_token_caps(self):
+    async def test_a_full_four_agent_session_stays_inside_the_call_ceiling_and_the_token_caps(self):
         model = FakeModel(turns={"cmo": turn("oppose", "No.")}, mod=moderation(conflicts=STUCK, revise=ASK_CMO * 3))
         result = await run(model)
-        self.assertLessEqual(len(model.calls), 10)
-        self.assertLessEqual(result["model_calls"], 10)
+        self.assertLessEqual(len(model.calls), council.MAX_CALLS)
+        self.assertLessEqual(result["model_calls"], council.MAX_CALLS)
         self.assertLessEqual(result["input_tokens"], council.MAX_INPUT_TOKENS)
         self.assertLessEqual(result["output_tokens"], council.MAX_OUTPUT_TOKENS)
 
@@ -519,7 +548,7 @@ class ParallelFanOutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.max_in_flight, 4)  # all four were in flight at the same moment
         self.assertLess(elapsed, delay * 2)  # ~1x a single call
         self.assertLess(elapsed, delay * 4 * 0.6)  # clearly not the 4x of a sequential loop
-        self.assertGreaterEqual(elapsed, delay)
+        self.assertGreaterEqual(elapsed, delay * 0.9)  # a Windows timer can wake a hair early (it once measured 0.3992 for a 0.4 s sleep)
 
     async def test_round_one_uses_gather_not_a_sequential_loop(self):
         source = (BACKEND_DIR / "app" / "agents" / "council.py").read_text(encoding="utf-8")
@@ -574,7 +603,7 @@ class ThinkingRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["options"])
         joined = " ".join(logs.output)
         self.assertIn("returned no text", joined)
-        self.assertIn("thinking_tokens=600", joined)  # the log says WHY: the cap went on hidden reasoning
+        self.assertIn(f"thinking_tokens={council.TURN_MAX_TOKENS}", joined)  # the log says WHY: the cap went on hidden reasoning
         self.assertIn("stop_reason=max_tokens", joined)
 
     async def test_with_thinking_off_the_same_model_resolves(self):
@@ -597,17 +626,19 @@ class ThinkingRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reply.truncated)  # the API said max_tokens even though the text is short
         self.assertFalse(council.normalize_turn("cao", reply.text)["valid"])
 
-    def test_the_turn_contract_is_tight_and_its_own_example_is_valid_and_short(self):
+    def test_the_turn_contract_has_no_150_word_limit_and_its_own_example_is_valid(self):
         from app.prompts import council_prompts as prompts
 
         contract = prompts.TURN_CONTRACT
-        for limit in ("AT MOST 150 words", "40 words max", "2 items max", "No text before or after it"):
-            self.assertIn(limit, contract)
-        example = contract[contract.index('{"stance": "conditional"'):contract.index("List a hard")].strip()
+        self.assertNotIn("150 words", contract)
+        self.assertNotIn("AT MOST 150", contract)
+        for needed in ("be concise but thorough", "No text before or after it", "2 items max"):
+            self.assertIn(needed, contract)
+        example = contract[contract.index('{"reasoning": "The real question'):contract.index("List a hard")].strip()
         turn_ = council.normalize_turn("cao", example)
         self.assertTrue(turn_["valid"])
-        self.assertLess(len(example.split()), 150)
-        self.assertLess(len(contract) // council.CHARS_PER_TOKEN, 500)
+        self.assertTrue(turn_["reasoning"])
+        self.assertLess(len(contract) // council.CHARS_PER_TOKEN, 1000)  # still a short instruction, even without the word limit
 
 
 
@@ -855,6 +886,9 @@ class QuestionPersistenceTests(CouncilApiBase):
             def execute(self, sql, params=()):
                 captured.setdefault("sql", []).append((sql, params))
 
+            def fetchone(self):  # answers the column check: the add_council_turn_reasoning migration is applied
+                return (2,)
+
         class Conn:
             def cursor(self):
                 return Cursor()
@@ -952,7 +986,7 @@ class AnyCombinationSessionTests(unittest.IsolatedAsyncioTestCase):
         for combo in (["cao", "coo"], ["cao", "coo", "cto"], ["cao", "coo", "cto", "cmo"]):
             model = FakeModel()
             await run(model, agents=combo)
-            roles = {c["kind"]: c["agent"] for c in model.calls if c["kind"] != "turn"}
+            roles = {c["kind"]: c["agent"] for c in model.calls if c["kind"] not in ("turn", "cross")}  # the procedural seats only
             self.assertEqual(roles, {"moderation": "coo", "synthesis": "cao", "red_team": "coo"}, combo)
 
     async def test_a_full_table_and_the_usual_pair_are_worded_exactly_as_before(self):

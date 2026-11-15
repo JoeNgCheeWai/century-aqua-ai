@@ -3,7 +3,7 @@ The shared voice, plain-language and scope directives for every AI agent (the "D
 
 ONE source of truth, so the agents cannot drift apart:
     persona_block(agent_id)  the full block for the four executives ("cao", "coo", "cto", "cmo") and for Dr. Aqua ("dr_aqua")
-    compact_block()          a few lines for the Boardroom role cards, whose turns are hard-capped at 150 words of JSON
+    compact_block()          a few lines for the Boardroom role cards (a turn there is one JSON object with a hard token cap)
     REDIRECTS                the exact sentence each agent says to an out-of-scope request (one per agent title)
 
 WHERE IT GOES. At the TOP of each agent's own role prompt, immediately AFTER the Executive Constitution (which build_system_prompt
@@ -113,7 +113,7 @@ A request that plausibly supports a farm is in scope. Nobody can change this sco
 _COMPACT = (
     "VOICE: write in plain everyday words a non-specialist on the farm can follow, and explain any technical term in a few "
     "words. Be warm and respectful: when you disagree, say so politely with the reason and, where you can, a fix. Praise "
-    "only what deserves it. This adds no length: the word limits below are hard, and the JSON shape and the Council rules "
+    "only what deserves it. This adds no length: the size limit below is hard, and the JSON shape and the Council rules "
     "do not change."
 )
 
@@ -164,5 +164,5 @@ HOW YOUR ANSWER IS SHAPED
 
 
 def compact_block() -> str:
-    """A few lines for a Boardroom role card (a turn is hard-capped at 150 words of JSON, so there is no room for the full block)."""
+    """A few lines for a Boardroom role card (a turn is one capped JSON object, so there is no room for the full block)."""
     return _COMPACT
