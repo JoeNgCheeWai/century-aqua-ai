@@ -89,6 +89,19 @@ async def _execute_if_planned(audit_id: int, actor: str, agent_id: str) -> dict[
 async def _decide(audit_id: int, action: str, x_internal_council_key: str | None, x_admin_id: str | None) -> dict[str, Any]:
     require_council_key(x_internal_council_key)  # before anything else
     actor = require_actor(x_admin_id, "X-Admin-Id", required=True)
+    return await apply_decision(audit_id, action, actor)
+
+
+async def apply_decision(audit_id: int, action: str, actor: str, *, remember: bool = True) -> dict[str, Any]:
+    """
+    Record a decision and, for an approval, run the stored plan. The keys have ALREADY been checked by the caller.
+
+    This is the ONE code path for every approval, whoever decides: a person through the endpoints below, or the COO under the CEO's standing
+    delegation (app/agents/operational_approval.py). So a delegated approval is held to exactly the same rules: the decision is recorded
+    before anything runs, it is atomic and final, the plan is re-validated from the stored copy, it runs once only, and it only opens a pull
+    request that a person must merge. ``remember=False`` skips the learning loop: the strategy memory is "what the CEO approved", and a
+    delegated approval is not the CEO's own.
+    """
     if not db.is_configured():
         raise HTTPException(status_code=503, detail="Authorization unavailable: the governance database is not configured.")
     try:
@@ -121,7 +134,7 @@ async def _decide(audit_id: int, action: str, x_internal_council_key: str | None
         # THE LEARNING LOOP: remember what the CEO approved, so the agent that proposed it can recall it later as experience. This
         # runs right after the decision is recorded and BEFORE anything executes. It never raises and never blocks: a failure to
         # remember is logged and the approval, and any pull request, carry on exactly as before. A rejection saves nothing.
-        body["strategy_memory"] = await strategy_store.save_approved_strategy(audit_id, actor)
+        body["strategy_memory"] = await strategy_store.save_approved_strategy(audit_id, actor) if remember else "skipped_delegated"
     if action == "approve":  # a rejection never executes anything
         outcome = await _execute_if_planned(audit_id, actor, str(row["agentId"]))
         if outcome is not None:

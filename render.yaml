@@ -49,6 +49,11 @@ services:
         value: claude-sonnet-5-5
       - key: OPUS_MODEL
         value: claude-opus-5-5
+      # COO-led operational approval. OFF unless this is exactly on/true/1/yes. When on, a small task that CODE classifies as "Safe to
+      # Implement" (UI component, prompt wording, test, document, strictly additive database change; no commands; at most 3 small files) is
+      # reviewed by the COO and, if it says yes, approved under the CEO's delegation. That only opens a pull request: a person still merges.
+      - key: COO_AUTO_APPROVAL
+        value: "off"
       # Phase 6.6: the fine-grained GitHub token the tool router uses to open pull requests (never to merge). Backend only.
       - key: GITHUB_PAT
         sync: false          # secret; Contents and Pull requests read/write on the one repository

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
-from app.agents import image_tool
+from app.agents import image_tool, operational_approval
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -341,6 +341,16 @@ async def get_cmo_result(
             # AgentAuditLog.authorizationRequest. None when nothing would be published.
             authorization_request=authorization_request,
         )
+    # COO-LED APPROVAL (ships OFF: COO_AUTO_APPROVAL), same rule as the CTO's. The CMO has no file reader, so a plan that touches an EXISTING file
+    # is never approved here (it was not read first): only a small plan of brand-new files can be. Anything else waits for the CEO. Never raises.
+    chat_text = parsed.chat_reply
+    if audit_id is not None and authorization_request is not None:
+        routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request)
+        note = operational_approval.approval_note(routed)
+        if note:
+            text += "\n\n" + note
+            if chat_text and chat_text.strip():
+                chat_text = chat_text.rstrip() + "\n\n" + note
     return CMOResult(
         reply=text,
         constitutional_score=score.score,
@@ -353,7 +363,7 @@ async def get_cmo_result(
         pre_consultation_requests=parsed.pre_consultation_requests,
         authorization_request=authorization_request,
         format_findings=format_findings,
-        chat_reply=vetted_chat_reply(parsed.chat_reply),
+        chat_reply=vetted_chat_reply(chat_text),
         model=model_id,
     )
 

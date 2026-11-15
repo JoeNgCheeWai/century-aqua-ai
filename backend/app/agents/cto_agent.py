@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
-from app.agents import tools
+from app.agents import diagnostics, operational_approval, plan_checks, tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -150,33 +150,57 @@ def _normal_path(path: str) -> str:
     return path.strip().lower()
 
 
+@dataclass
+class ToolOutcome:
+    """What the CTO's tools did during ONE answer: facts for code to use afterwards. Nothing here is model-written."""
+
+    read: set[str] = field(default_factory=set)  # paths read IN FULL (a cut-off file is not here)
+    texts: dict[str, str] = field(default_factory=dict)  # the text of each of those files, by lower-case path
+    diagnostic: dict | None = None  # the diagnostic report, if the CTO ran the Boardroom diagnostic
+
+
 async def _create_with_reader(client, *, model: str, system: str, messages: list[dict]):
     """
-    ONE answer with the read-only file tool on offer. Returns (the final response, the set of file paths the CTO READ in full).
+    ONE answer with the CTO's two READ-ONLY tools on offer: github_read_file and diagnose_boardroom_session. Returns (the final response,
+    a ToolOutcome: the files read in full, their text, and the diagnostic report if one ran).
 
-    github_read_file is SAFE (it only reads), so no authorization is needed and the CTO may call it freely. The loop is bounded:
-    at most MAX_FILE_READS reads (a further request gets an error result), at most MAX_TOOL_ROUNDS rounds, and a last call with
-    tool use switched off if the model is still asking. The tool blocks (an HTTP call), so it runs in a worker thread. Only the
-    branch ``main`` is read, whatever the model asks for: a change is made from main, so main is what must have been read.
-    A file that was cut off (too long) is NOT counted as read: it cannot be rewritten whole.
+    Both tools only READ (the diagnostic also probes the model, within a hourly limit), so no authorization is needed. The loop is bounded:
+    at most MAX_FILE_READS reads and one diagnostic (a further request gets an error result), at most MAX_TOOL_ROUNDS rounds, and a last
+    call with tool use switched off if the model is still asking. Both tools block (HTTP or database), so they run in a worker thread or
+    the event loop. Only the branch ``main`` is read, whatever the model asks for: a change is made from main, so main is what must have
+    been read. A file that was cut off (too long) is NOT counted as read: it cannot be rewritten whole.
     """
-    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system, "tools": [tools.READ_TOOL_SPEC]}
+    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system, "tools": [tools.READ_TOOL_SPEC, diagnostics.TOOL_SPEC]}
     log_tools_available(common["tools"])
     convo = list(messages)
-    read: set[str] = set()
+    outcome = ToolOutcome()
+    read = outcome.read
     made = 0
+    diagnosed = 0
     response = await client.messages.create(messages=convo, **common)
     for _ in range(MAX_TOOL_ROUNDS):
         if response.stop_reason != "tool_use":
-            return response, read
+            return response, outcome
         results = []
         for block in response.content:
             if getattr(block, "type", None) != "tool_use":
                 continue
             args = getattr(block, "input", None)
             args = args if isinstance(args, dict) else {}
-            if getattr(block, "name", None) != tools.READ_TOOL_NAME:
-                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True, "content": "Unknown tool. Only github_read_file exists."})
+            if getattr(block, "name", None) == diagnostics.TOOL_NAME:
+                if diagnosed >= diagnostics.MAX_PER_ANSWER:
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
+                                    "content": "The diagnostic already ran in this answer. Use its report."})
+                    continue
+                diagnosed += 1
+                session_id = args.get("session_id")
+                report = await diagnostics.diagnose(session_id if isinstance(session_id, str) and session_id.strip() else None,
+                                                    args.get("run_probe") is not False)
+                outcome.diagnostic = report
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": not report.get("ok"), "content": diagnostics.render_report(report)})
+            elif getattr(block, "name", None) != tools.READ_TOOL_NAME:
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
+                                "content": "Unknown tool. Only github_read_file and diagnose_boardroom_session exist."})
             elif made >= MAX_FILE_READS:
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                 "content": f"File-read limit reached ({MAX_FILE_READS} per answer). Work with the files you have already read."})
@@ -187,9 +211,10 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
                 failed = text.startswith("ERROR:")
                 if not failed and tools.CUT_OFF_MARK not in text and isinstance(path, str):
                     read.add(_normal_path(path))
+                    outcome.texts[_normal_path(path)] = text
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": failed, "content": text})
         if not results:
-            return response, read
+            return response, outcome
         convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": results}]
         response = await client.messages.create(messages=convo, **common)
     if response.stop_reason == "tool_use":
@@ -198,7 +223,7 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
                    for b in response.content if getattr(b, "type", None) == "tool_use"]
         convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": pending}]
         response = await client.messages.create(messages=convo, tool_choice={"type": "none"}, **common)
-    return response, read
+    return response, outcome
 
 
 async def _enforce_read_before_write(authorization_request: dict | None, read: set[str]) -> tuple[dict | None, list[str]]:
@@ -229,6 +254,55 @@ async def _enforce_read_before_write(authorization_request: dict | None, read: s
     if not (revised.get("proposed_code_diff") or revised.get("proposed_commands")):
         return None, [finding, "the authorization_request had nothing left to review without its plan; dropped"]
     return revised, [finding]
+
+
+_SCHEMA_PATHS = ("frontend/prisma/schema.prisma",)
+
+
+def _self_check(authorization_request: dict | None, outcome: ToolOutcome) -> tuple[dict | None, list[str], str]:
+    """
+    THE SELF-CHECK (plan_checks): run the static checks on the plan the CTO wrote. Returns (the request, findings, the declaration).
+
+    The plan passes -> the declaration, written here by code, lists what was checked, which context files were read, and what was NOT run.
+    The plan fails -> the whole plan is dropped (all or nothing) with a finding for each problem; the rest of the request stands, or is
+    dropped if nothing is left to review, exactly like the read-before-write rule. No plan -> nothing to check, no declaration.
+    """
+    plan = (authorization_request or {}).get("execution_plan")
+    if not plan:
+        return authorization_request, [], ""
+    result = plan_checks.check_plan(plan, outcome.texts)
+    if result.passed:
+        schema_read = any(path in outcome.read for path in _SCHEMA_PATHS)
+        tests_read = any(path.startswith(("backend/tests/", "frontend/scripts/")) for path in outcome.read)
+        return authorization_request, [], plan_checks.declaration(result, schema_read, tests_read)
+    findings = ["execution_plan dropped by the self-check: " + "; ".join(result.failures)]
+    revised = dict(authorization_request)
+    revised["execution_plan"] = None
+    if not (revised.get("proposed_code_diff") or revised.get("proposed_commands")):
+        return None, [*findings, "the authorization_request had nothing left to review without its plan; dropped"], ""
+    return revised, findings, ""
+
+
+def _check_failed_note(findings: list[str], request_kept: bool) -> str:
+    """The truth, first, when the self-check dropped the plan (the model may have written that it is ready). Code-written."""
+    detail = findings[0].split(": ", 1)[-1][:600]
+    tail = ("A request is still waiting on the Authorizations page, but approving it will NOT open a pull request." if request_kept
+            else "Nothing is waiting for you to approve.")
+    return (f"**One important correction:** my own checks found a problem with the plan I drafted, so I did not prepare it for your approval. "
+            f"The problem: {detail}. {tail} Ask me again and I will fix it and re-check it before I prepare the plan.")
+
+
+def diagnostic_block(report: dict) -> str:
+    """What the diagnostic really found, in the first reply. Written by code from the report (never from model text)."""
+    ran = "; ".join(report.get("steps", []))
+    probes = report.get("probes") or []
+    probe_line = ("Probe results: " + ", ".join(f"{p['seat'].upper()} {'answered' if p.get('usable') else ('error ' + str(p.get('error')) if p.get('error') else 'did not give a usable answer (' + str(p.get('stop_reason')) + ')')}"
+                                                for p in probes) + ".\n") if probes else ""
+    return (f"### What I found (diagnostics already run)\n"
+            f"I ran the Boardroom diagnostic myself just now: {ran}.\n{probe_line}"
+            f"**Cause ({report.get('confidence', 'unknown')}):** {report.get('cause')}\n\n"
+            f"**The exact fix:** {report.get('fix')}\n\n"
+            f"_{report.get('limits', '')}_")
 
 
 @dataclass
@@ -313,9 +387,9 @@ async def get_cto_result(
 
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, CTO_MODEL)
-    files_read: set[str] = set()
+    outcome = ToolOutcome()
     if reader:
-        response, files_read = await _create_with_reader(_get_client(), model=model_id, system=system, messages=messages)
+        response, outcome = await _create_with_reader(_get_client(), model=model_id, system=system, messages=messages)
     else:  # a review of another executive's recommendation: no tools, exactly as before
         log_tools_available([])
         response = await _get_client().messages.create(
@@ -333,14 +407,22 @@ async def get_cto_result(
     # whole. A truncated or invalid object yields no request (never a half-built one).
     authorization_request = None
     plan_dropped = False
+    check_dropped = False
+    declaration = ""
     data = load_json_object(raw) if parsed.structured else None
     if data is not None:
         authorization_request, auth_findings = normalize_authorization_request(data.get("authorization_request"))
         format_findings.extend(auth_findings)
         # The Golden Rule, in code: a plan may only overwrite an existing file the CTO read in full during THIS answer.
-        authorization_request, read_findings = await _enforce_read_before_write(authorization_request, files_read)
+        authorization_request, read_findings = await _enforce_read_before_write(authorization_request, outcome.read)
         format_findings.extend(read_findings)
         plan_dropped = bool(read_findings)
+        # THE SELF-CHECK, in code: the checks a plan can really pass here (it parses, no placeholders, not a truncated rewrite, additive
+        # migrations only). A plan that fails is dropped, like an unread overwrite. One that passes gets a declaration WRITTEN BY CODE that
+        # lists what was checked and what was not (the CTO cannot run tests, so the model never claims verification itself).
+        authorization_request, check_findings, declaration = _self_check(authorization_request, outcome)
+        format_findings.extend(check_findings)
+        check_dropped = bool(check_findings)
     if format_findings:
         logger.warning("CTO output format: %s", "; ".join(format_findings))
 
@@ -363,8 +445,23 @@ async def get_cto_result(
             chat_text = note + "\n\n" + chat_text.lstrip()
         # With NO chat_reply from the model, leave it empty: the screen then shows the full recommendation (which now starts with the
         # note), instead of a reply that is nothing but the correction and hides the actual answer.
+    if check_dropped:
+        # The plan failed a check: say exactly which, first, so the reply never promises a plan that no longer exists.
+        note = _check_failed_note(check_findings, authorization_request is not None)
+        text = note + "\n\n" + text
+        if chat_text and chat_text.strip():
+            chat_text = note + "\n\n" + chat_text.lstrip()
+    if outcome.diagnostic is not None:
+        # AUTONOMOUS SELF-DIAGNOSIS: the diagnostic really ran, so code puts what it found FIRST, in the first reply, whatever the model wrote.
+        block = diagnostic_block(outcome.diagnostic)
+        text = block + "\n\n" + text
+        chat_text = block + "\n\n" + (chat_text or "").lstrip() if chat_text and chat_text.strip() else chat_text
     if authorization_request is not None:
         text += "\n\n" + audit_summary(authorization_request)
+        if declaration:
+            text += "\n\n" + declaration
+            if chat_text and chat_text.strip():
+                chat_text = chat_text.rstrip() + "\n\n" + declaration
     if response.stop_reason == "max_tokens":
         text += "\n\n[Response reached the length limit. Ask me to continue for the remainder.]"
         if not parsed.structured:
@@ -398,6 +495,16 @@ async def get_cto_result(
             # AgentAuditLog.authorizationRequest. None when no change was requested.
             authorization_request=authorization_request,
         )
+    # COO-LED APPROVAL (ships OFF: COO_AUTO_APPROVAL). A small task code classifies as "Safe to Implement" goes to the COO for review and,
+    # if the COO says yes to integrity, safe and fully reported, is approved under the CEO's delegation. Anything else waits for the CEO.
+    # Runs only now, because the task needs its audit row. Never raises. The note is added to what the CEO reads, written by code.
+    if audit_id is not None and authorization_request is not None:
+        routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request, originals=outcome.texts)
+        note = operational_approval.approval_note(routed)
+        if note:
+            text += "\n\n" + note
+            if chat_text and chat_text.strip():
+                chat_text = chat_text.rstrip() + "\n\n" + note
     return CTOResult(
         reply=text,
         constitutional_score=score.score,

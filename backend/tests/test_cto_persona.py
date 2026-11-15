@@ -79,15 +79,17 @@ class TheEngineerPromptIsThereAndInTheRightPlaceTests(unittest.TestCase):
 
 
 class TheOldNoToolsWordingWasCorrectedNotLeftContradictingTests(unittest.TestCase):
-    def test_the_prompt_no_longer_says_it_has_no_tools_at_all_it_names_the_one_it_has(self):
+    def test_the_prompt_no_longer_says_it_has_no_tools_at_all_it_names_the_two_it_has_both_read_only(self):
         text = cto_prompt.CTO_SYSTEM_PROMPT
         self.assertNotIn("You have NO tools: no shell", text)
-        self.assertIn("You have NO tools except ONE: github_read_file", text)
+        self.assertIn("You have NO tools except TWO, and both only READ: github_read_file", text)
         self.assertIn("which only READS a single file", text)
+        self.assertIn("diagnose_boardroom_session, which only reads", text)
+        self.assertIn("you cannot run tests or scripts", text)
 
     def test_every_other_prohibition_is_unchanged_it_still_cannot_write_run_deploy_or_change_anything(self):
         text = cto_prompt.CTO_SYSTEM_PROMPT
-        for needle in ("no repository write access", "no deploy access", "no database access",
+        for needle in ("no repository write access", "no deploy access", "no database write access",
                        "You cannot run, deploy, commit, migrate, restart, block, delete, rotate or change anything",
                        "Never state or imply that you did it", "Never ask for, repeat or store a secret", "Never invent a file path"):
             self.assertIn(needle, text, needle)
