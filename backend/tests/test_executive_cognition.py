@@ -193,11 +193,15 @@ class CtoCommunicationProtocolTests(unittest.TestCase):
                  CTO.index("COMMUNICATION PROTOCOL: HOW YOU TALK"), CTO.index("STRATEGIC THINKING PROCESS"), CTO.index("You are AI_CTO,")]
         self.assertEqual(order, sorted(order))
 
-    def test_only_the_cto_is_given_it(self):
+    def test_each_executive_has_its_own_tuned_protocol_and_only_the_cto_has_the_coders_one(self):
+        # Communication parity: the CAO, COO and CMO now carry the same protocol, tuned to their role (tests/test_executive_parity.py). What stays
+        # CTO-only is the CODER wording: the CTO talks to a CEO "who has never opened the code".
         for agent in ("cao", "coo", "cmo"):
-            self.assertNotIn("COMMUNICATION PROTOCOL", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
-            self.assertNotIn("VISIONARY CEO", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
-            self.assertIn("No bullet points, no headings", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)  # their plain-reply rule is unchanged
+            prompt = AGENTS[agent].BASE_SYSTEM_PROMPT
+            self.assertEqual(prompt.count("COMMUNICATION PROTOCOL"), 1, agent)
+            self.assertNotIn("NOT A CODER", prompt, agent)
+            self.assertNotIn("never opened the code", prompt, agent)
+            self.assertNotIn("No bullet points, no headings", prompt, agent)  # the shared plain-reply rule is gone for them: it would contradict the protocol
 
     def test_rule_1_speak_to_a_visionary_ceo_with_analogies_and_step_by_step_guidance(self):
         for needle in ("SPEAK TO A VISIONARY CEO, NOT A CODER", "never opened the code", "Never talk down to them",
@@ -296,9 +300,12 @@ class CtoChatReplyPromptTests(unittest.TestCase):
         self.assertEqual(CTO.count("CONVERSATIONAL REPLY (MANDATORY"), 1)
         self.assertIn(self.CHAT.strip(), CTO)
         self.assertNotIn(chat_style.CHAT_REPLY_PROMPT.strip(), CTO)
+        # Parity: the other three now have their OWN structured prompt too, not the shared plain one and not the CTO's.
         for agent in ("cao", "coo", "cmo"):
-            self.assertIn(chat_style.CHAT_REPLY_PROMPT.strip(), AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
-            self.assertNotIn(self.CHAT.strip(), AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+            prompt = AGENTS[agent].BASE_SYSTEM_PROMPT
+            self.assertIn(chat_style.CHAT_REPLY_PROMPTS[agent].strip(), prompt, agent)
+            self.assertNotIn(chat_style.CHAT_REPLY_PROMPT.strip(), prompt, agent)
+            self.assertNotIn(self.CHAT.strip(), prompt, agent)
 
     def test_it_no_longer_forbids_headings_and_lists_and_asks_for_the_protocol_layout(self):
         self.assertNotIn("No bullet points, no headings, no markdown", self.CHAT)
@@ -318,11 +325,12 @@ class CtoChatReplyPromptTests(unittest.TestCase):
         for phrase in GATEKEEPER_PHRASES:
             self.assertNotIn(phrase, self.CHAT, phrase)
 
-    def test_the_length_is_bounded_in_code_and_the_other_agents_keep_the_old_cap(self):
+    def test_the_length_is_bounded_in_code_and_a_caller_that_passes_no_cap_keeps_the_old_one(self):
         from app.agents import cao_reasoning
 
         self.assertEqual(cto_agent.CTO_MAX_CHAT_REPLY_CHARS, 5000)
-        self.assertEqual(cao_reasoning.MAX_CHAT_REPLY_CHARS, 1200)  # CAO, COO and CMO are unchanged
+        self.assertEqual(cao_reasoning.MAX_CHAT_REPLY_CHARS, 1200)  # the parser's DEFAULT is unchanged; all four agents now pass 5000 (see test_executive_parity)
+        self.assertEqual(cao_reasoning.STRUCTURED_CHAT_REPLY_CHARS, 5000)
         long_reply = json.dumps({"response": "x. Recommendation for human review: y.", "chat_reply": "word " * 5000})
         self.assertEqual(len(cao_reasoning.parse_cao_output(long_reply).chat_reply), 1200)
         longer = cao_reasoning.parse_cao_output(long_reply, chat_reply_chars=5000).chat_reply

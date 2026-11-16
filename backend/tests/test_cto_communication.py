@@ -1,7 +1,7 @@
 """
 The CTO's communication overhaul, as CODE (the prompt wording is pinned in tests/test_executive_cognition.py):
 
-  * a structured, friendly chat_reply of up to 5000 characters survives a whole CTO call, while the other executives keep their 1200;
+  * a structured, friendly chat_reply of up to 5000 characters survives a whole CTO call (the other three now do the same: tests/test_executive_parity.py);
   * when the read-before-write rule drops the plan, the friendly wording must never promise a plan that no longer exists: code adds a
     correction FIRST, and never turns "no chat reply" into a reply that is only the correction;
   * partner wording is not mistaken for claiming an action, and real claims are still removed.
@@ -69,7 +69,7 @@ class CtoCommunicationCodeTests(GuardedTestCase):
         result, _ = self.ask([text_reply(reply_with("word " * 3000, {NEW_FILE: "x\n"}))])  # a runaway reply is cut in code
         self.assertLessEqual(len(self.model_part(result.chat_reply)), cto_agent.CTO_MAX_CHAT_REPLY_CHARS)
 
-    def test_the_other_three_executives_still_cut_their_chat_reply_at_1200(self):
+    def test_the_parsers_own_default_cap_is_still_1200_for_any_caller_that_passes_none(self):
         from app.agents import cao_reasoning
 
         raw = json.dumps({"response": "x. Recommendation for human review: y.", "chat_reply": "word " * 3000})
