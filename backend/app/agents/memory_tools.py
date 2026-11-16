@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -95,6 +96,8 @@ class SaveResult:
     status: str  # saved | duplicate | rejected | failed
     message: str
     vector_id: str = ""
+    step: str = ""  # where a failure happened: environment | database | embedding | pinecone | internal (empty when nothing failed)
+    reason: str = ""  # the failure's real error text, scrubbed of secrets and cut short: for the server log and the audit table
 
     @property
     def ok(self) -> bool:
@@ -106,6 +109,8 @@ class SearchResult:
     ok: bool
     hits: list[dict[str, Any]] = field(default_factory=list)
     message: str = ""
+    step: str = ""  # as for SaveResult
+    reason: str = ""
 
 
 def _clean(value: Any) -> str:
@@ -121,20 +126,170 @@ def vector_id(role: str, title: str, insight: str) -> str:
     return "mem-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
 
 
-def _configured_problem(need_db: bool) -> str:
-    if need_db and not db.is_configured():
-        return "the memory database is not configured"
-    if not (embeddings.is_configured() and vector_db.is_configured()):
-        return "OPENAI_API_KEY, PINECONE_API_KEY and PINECONE_INDEX must all be set"
-    return ""
+# ------------------------------------------------------------------------------------------------ saying EXACTLY what failed
+# A failure is never a bare "error". The agent (and so the CEO) is told which STEP failed (the environment, the database, the embedding, Pinecone), what to
+# check, and the real error text. The libraries wrap their errors (OpenAI's and Pinecone's real error is the ``__cause__`` of what reaches us), so the cause
+# chain is read. The text is scrubbed first: a key, a token or a database password is never repeated, and it is cut short.
+REQUIRED_ENV = ("OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX")
+SECRET_ENV = ("OPENAI_API_KEY", "PINECONE_API_KEY", "GOVERNANCE_DATABASE_URL", "DATABASE_URL")
+MAX_DETAIL = 300
+_URL_CREDENTIALS = re.compile(r"(postgres(?:ql)?://)[^@\s/]+@", re.IGNORECASE)
+_MISSING_ENV = "Required environment variables (OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX) are missing from the backend."
 
 
+def missing_env() -> list[str]:
+    """The required variables that are missing or empty (a value of only spaces counts as empty)."""
+    return [name for name in REQUIRED_ENV if not os.getenv(name, "").strip()]
+
+
+def _safe_str(value: Any) -> str:
+    """str(value), or the class name if the object cannot even describe itself: building an error message must never raise a second error."""
+    try:
+        return str(value)
+    except Exception:
+        return type(value).__name__
+
+
+def _scrub(text: Any) -> str:
+    """One line of error text that is safe to show: database credentials, secret-looking strings and the live key values are masked, then cut short."""
+    out = _URL_CREDENTIALS.sub(r"\1[credentials]@", redact_secrets(_safe_str(text)))  # FIRST: a short password must not be matched inside the URL's own scheme
+    for name in SECRET_ENV:
+        value = os.getenv(name, "").strip()
+        if len(value) >= 8:
+            out = out.replace(value, f"[{name}]")
+    try:
+        password = db.parse_url(db.database_url())["password"] if db.is_configured() else ""
+        if len(password) >= 6:  # a password standing alone, outside a URL. Whole words only, so a password like "postgres" cannot eat the word inside "postgres://"
+            out = re.sub(r"(?<![\w/])" + re.escape(password) + r"(?![\w:/])", "[database password]", out)
+    except Exception:
+        pass
+    return " ".join(out.split())[:MAX_DETAIL]
+
+def _chain(exc: BaseException) -> list[BaseException]:
+    """The exception and its causes, outermost first (at most 6; a cycle ends it)."""
+    seen: set[int] = set()
+    out: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen and len(out) < 6:
+        seen.add(id(current))
+        out.append(current)
+        current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    return out
+
+
+def _names(exc: BaseException) -> str:
+    """Every class name in the whole cause chain and each class's inheritance, lower-case: a sturdy way to classify a library's error."""
+    return " ".join(c.__name__.lower() for item in _chain(exc) for c in type(item).__mro__)
+
+
+def _text(exc: BaseException) -> str:
+    return " ".join(_safe_str(item).lower() for item in _chain(exc))
+
+
+def _pg(exc: BaseException) -> tuple[str, str]:
+    """(SQLSTATE code, message) from a pg8000 error anywhere in the chain, else ('', ''). pg8000 puts both in a dict as its first argument."""
+    for item in _chain(exc):
+        first = item.args[0] if item.args else None
+        if isinstance(first, dict) and ("C" in first or "M" in first):
+            return str(first.get("C", "")), str(first.get("M", ""))
+    return "", ""
+
+
+def _detail(exc: BaseException) -> str:
+    """The real error text: each distinct message down the cause chain (our wrapper first, the library's own error after it), scrubbed and cut short."""
+    code, message = _pg(exc)
+    parts: list[str] = [_scrub(f"{message} (SQLSTATE {code})")] if message else []
+    for item in _chain(exc):
+        if item.args and isinstance(item.args[0], dict):
+            continue  # a pg8000 error dict: already shown above in plain words
+        text = _scrub(item) or type(item).__name__
+        if not any(text in seen for seen in parts):
+            parts.append(text)
+    return " | ".join(parts)[:MAX_DETAIL] or type(exc).__name__
+
+def _describe_database(exc: BaseException) -> str:
+    code, _ = _pg(exc)
+    names = _names(exc)
+    if code == "42P01":
+        return ("Database error. The ExecutiveMemory table does not exist on this database. Apply the Prisma migrations "
+                "(`npm run db:deploy` from the frontend folder) to the database the backend uses.")
+    if code == "42703":
+        return "Database error. The ExecutiveMemory table exists but its columns do not match. Apply the latest Prisma migrations to this database."
+    if code in ("28P01", "28000"):
+        return "Database error. The database rejected the login. Check the user and password in GOVERNANCE_DATABASE_URL (or DATABASE_URL)."
+    if code == "3D000":
+        return "Database error. The database named in GOVERNANCE_DATABASE_URL (or DATABASE_URL) does not exist."
+    if any(word in names for word in ("interfaceerror", "connectionerror", "timeouterror", "oserror", "governancedberror")):
+        return "Database error. Could not connect to the database. Ensure GOVERNANCE_DATABASE_URL (or DATABASE_URL) is set and the database is reachable."
+    return "Database error. Ensure GOVERNANCE_DATABASE_URL (or DATABASE_URL) is set and the ExecutiveMemory table exists."
+
+
+def _describe_embedding(exc: BaseException) -> str:
+    names, text = _names(exc), _text(exc)
+    if "authenticationerror" in names or "permissiondeniederror" in names or "openai_api_key is not configured" in text:
+        return "OpenAI embedding error. OPENAI_API_KEY is missing, invalid or not allowed to create embeddings. Check the key on the backend."
+    if "ratelimiterror" in names:
+        return ("OpenAI embedding error. The request was rate-limited, or the OpenAI account is out of quota. Check the billing and usage of the "
+                "account that owns OPENAI_API_KEY.")
+    if "apiconnectionerror" in names or "apitimeouterror" in names or "timeouterror" in names:
+        return "OpenAI embedding error. The backend could not reach OpenAI in time. Check the network and try again."
+    if "package is not installed" in text:
+        return "OpenAI embedding error. The openai package is not installed on the backend."
+    if "notfounderror" in names or "badrequesterror" in names or "unprocessableentityerror" in names:
+        return "OpenAI embedding error. OpenAI rejected the request (the embedding model may not be available to this account)."
+    return "OpenAI embedding error."
+
+
+def _describe_pinecone(exc: BaseException) -> str:
+    names, text = _names(exc), _text(exc)
+    if "unauthorized" in names or "forbidden" in names or "api key" in text:
+        return "Pinecone error. PINECONE_API_KEY is missing, invalid or not allowed to use this index. Check the key on the backend."
+    if "notfound" in names or "not found" in text:
+        return "Pinecone error. The index named in PINECONE_INDEX was not found. Check PINECONE_INDEX, and that the index exists in this Pinecone project."
+    if "dimension" in text:
+        return "Pinecone error. The index has the wrong dimension: it must be created with dimension 1536 (text-embedding-3-small) and the cosine metric."
+    if "ratelimit" in names or "429" in text:
+        return "Pinecone error. The request was rate-limited. Try again shortly."
+    if "pineconevalueerror" in names or "pineconeconfigurationerror" in names or "must both be set" in text:  # pinecone 10.x names its configuration error PineconeValueError
+        return "Pinecone error. The Pinecone configuration is invalid. Check PINECONE_API_KEY and PINECONE_INDEX."
+    if "serviceexception" in names or "serviceerror" in names:
+        return "Pinecone error. Pinecone had a server-side problem. Try again shortly."
+    return "Pinecone error. Ensure PINECONE_API_KEY and PINECONE_INDEX are correct and the index exists."
+
+
+def _failure(action: str, step: str, headline: str, exc: BaseException | None = None) -> tuple[str, str]:
+    """(the plain-text message for the agent, the scrubbed reason for the log and the audit table). ``action`` is 'save' or 'search'."""
+    detail = _detail(exc) if exc is not None else ""
+    message = f"Failed to {action} memory: {headline}" + (f" Details: {detail.rstrip('. ')}." if detail else "")
+    logger.error("memory_tools: %s failed at the %s step (%s): %s", action, step, type(exc).__name__ if exc is not None else "-", detail or headline)
+    return message, detail or headline
+
+
+def _env_failure(action: str) -> tuple[str, str]:
+    absent = missing_env()
+    logger.error("memory_tools: %s refused: missing %s", action, ", ".join(absent))
+    return f"Failed to {action} memory: {_MISSING_ENV} Missing right now: {', '.join(absent)}.", "missing " + ", ".join(absent)
+
+
+async def _release(memory_id: str) -> bool:
+    """Take back the claimed database row after a failed save. True if it is gone; False (and logged) if that failed too."""
+    try:
+        await asyncio.shield(db.run(_release_sync, memory_id))
+        return True
+    except Exception as exc:
+        logger.error("memory_tools: could not release a claim after a failure (%s): %s", type(exc).__name__, _detail(exc))
+        return False
 
 
 # ------------------------------------------------------------------------------------------------ save
+
+
 async def save(role: str, title: str, insight: str, context: str = "", *, source_chat_id: str | None = None) -> SaveResult:
     """Save one memory. Returns a SaveResult and NEVER raises: a problem is a 'rejected' or 'failed' result with a plain reason."""
     try:
+        if missing_env():  # the very first check: before the input is looked at, the database is touched or a cent is spent
+            message, reason = _env_failure("save")
+            return SaveResult("failed", message, step="environment", reason=reason)
         who = str(role or "").strip().upper()
         if who not in MEMORY_ROLES:
             return SaveResult("rejected", f"ERROR: the role must be one of {', '.join(MEMORY_ROLES)}")
@@ -143,37 +298,50 @@ async def save(role: str, title: str, insight: str, context: str = "", *, source
                                        ("context", context_text, 0, MAX_CONTEXT)):
             if len(text) < low or len(text) > high:
                 return SaveResult("rejected", f"ERROR: the {label} must be {low}-{high} characters (it is {len(text)}). Make it short and specific, then save it again.")
-        problem = _configured_problem(need_db=True)
-        if problem:
-            return SaveResult("failed", f"ERROR: memory could not be saved: {problem}")
+        if not db.is_configured():
+            message, reason = _failure("save", "database", "Database error. GOVERNANCE_DATABASE_URL (or DATABASE_URL) is not set on the backend, so the "
+                                       "ExecutiveMemory table cannot be reached.")
+            return SaveResult("failed", message, step="database", reason=reason)
         vid = vector_id(who, title_text, insight_text)
         memory_id = str(uuid.uuid4())
         chat_id = _clean(source_chat_id)[:200] if isinstance(source_chat_id, str) and source_chat_id.strip() else None
+
+        # STEP 1, the database: claim the row (the unique vectorId is what stops the same lesson being saved twice).
         try:
             claimed = await db.run(_claim_sync, memory_id, vid, who, title_text, insight_text, context_text or None, chat_id)
         except Exception as exc:
-            logger.error("memory_tools: could not claim a memory (%s)", type(exc).__name__)
-            return SaveResult("failed", "ERROR: memory could not be saved: the memory database is not available")
+            message, reason = _failure("save", "database", _describe_database(exc), exc)
+            return SaveResult("failed", message, vid, "database", reason)
         if not claimed:
             return SaveResult("duplicate", f"Already in memory: '{title_text}'. Nothing was saved again.", vid)
-        try:  # the claim is held: embed and store, and let it go again if either fails so the lesson can be saved later
+
+        # The claim is held. Any failure below lets it go again (so the lesson can be saved later) and says which step failed and why.
+        step, headline, failure = "", "", None
+        try:
+            step = "embedding"  # STEP 2, OpenAI: the vector for title + insight + context
             vector = await asyncio.wait_for(embeddings.generate_embedding("\n".join(p for p in (title_text, insight_text, context_text) if p)), TIMEOUT_SECONDS)
+            step = "pinecone"  # STEP 3, Pinecone: the vector, in the memory namespace
             chunk = {"chunk_id": vid, "embedding": vector, "type": MEMORY_TYPE, "role": who, "title": title_text, "insight": insight_text,
                      "context": context_text, "memory_id": memory_id, "source_chat_id": chat_id or "", "created_at": datetime.now(timezone.utc).isoformat()}
             await asyncio.wait_for(vector_db.upsert_chunks([chunk], namespace=NAMESPACE), TIMEOUT_SECONDS)
-        except BaseException as exc:
-            try:
-                await asyncio.shield(db.run(_release_sync, memory_id))
-            except Exception:
-                logger.error("memory_tools: could not release a claim after a failure")
-            if not isinstance(exc, Exception):  # a cancellation or an interrupt: let it through, after the release above
-                raise
-            reason = "timed out" if isinstance(exc, asyncio.TimeoutError) else type(exc).__name__
-            return SaveResult("failed", f"ERROR: memory could not be saved ({reason}). Nothing was kept.")
+        except asyncio.TimeoutError as exc:
+            who_timed_out = "OpenAI" if step == "embedding" else "Pinecone"
+            headline, failure = f"{who_timed_out} timed out: no answer within {TIMEOUT_SECONDS:g} seconds ({step} step). Check the network and try again.", exc
+        except Exception as exc:  # the library's own error classes are told apart by name in the describe functions
+            headline, failure = (_describe_embedding(exc) if step == "embedding" else _describe_pinecone(exc)), exc
+        except BaseException:  # a cancellation or an interrupt: let go of the claim, then let it through
+            await _release(memory_id)
+            raise
+        if failure is not None:
+            released = await _release(memory_id)
+            message, reason = _failure("save", step, headline, failure)
+            if not released:
+                message += " The database row could not be removed afterwards, so this lesson may show as already saved: save it again to retry."
+            return SaveResult("failed", message + " Nothing was kept." if released else message, vid, step, reason)
         return SaveResult("saved", f"Saved to memory: '{title_text}' (under {who}).", vid)
-    except Exception as exc:
-        logger.error("memory_tools: save failed unexpectedly (%s)", type(exc).__name__)
-        return SaveResult("failed", "ERROR: memory could not be saved")
+    except Exception as exc:  # the last net: whatever it was, say what it was
+        message, reason = _failure("save", "internal", "Unexpected error inside the memory tool.", exc)
+        return SaveResult("failed", message, step="internal", reason=reason)
 
 
 
@@ -181,20 +349,31 @@ async def save(role: str, title: str, insight: str, context: str = "", *, source
 async def search(query: str, role_filter: str | None = None) -> SearchResult:
     """Find the memories closest in meaning to ``query``. NEVER raises. ``role_filter`` limits it to one role; None searches every role."""
     try:
+        if missing_env():  # the same quick check as save: the environment first
+            message, reason = _env_failure("search")
+            return SearchResult(False, message=message, step="environment", reason=reason)
         text = _clean(query)[:MAX_QUERY]
         if len(text) < MIN_QUERY:
             return SearchResult(False, message="ERROR: the query is too short")
         wanted = str(role_filter).strip().upper() if role_filter else ""
         if wanted and wanted not in MEMORY_ROLES:
             return SearchResult(False, message=f"ERROR: role_filter must be one of {', '.join(MEMORY_ROLES)}")
-        problem = _configured_problem(need_db=False)
-        if problem:
-            return SearchResult(False, message=f"ERROR: memory could not be searched: {problem}")
         metadata_filter: dict[str, Any] = {"type": {"$eq": MEMORY_TYPE}}
         if wanted:
             metadata_filter["role"] = {"$eq": wanted}
-        vector = await asyncio.wait_for(embeddings.generate_embedding(text), TIMEOUT_SECONDS)
-        matches = await asyncio.wait_for(vector_db.query_vectors(vector, top_k=TOP_K, namespace=NAMESPACE, metadata_filter=metadata_filter), TIMEOUT_SECONDS)
+        step, headline, failure, matches = "embedding", "", None, []
+        try:
+            vector = await asyncio.wait_for(embeddings.generate_embedding(text), TIMEOUT_SECONDS)  # OpenAI: the vector for the question
+            step = "pinecone"  # Pinecone: the nearest memories, in the memory namespace and the role filter
+            matches = await asyncio.wait_for(vector_db.query_vectors(vector, top_k=TOP_K, namespace=NAMESPACE, metadata_filter=metadata_filter), TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as exc:
+            who_timed_out = "OpenAI" if step == "embedding" else "Pinecone"
+            headline, failure = f"{who_timed_out} timed out: no answer within {TIMEOUT_SECONDS:g} seconds ({step} step). Check the network and try again.", exc
+        except Exception as exc:
+            headline, failure = (_describe_embedding(exc) if step == "embedding" else _describe_pinecone(exc)), exc
+        if failure is not None:
+            message, reason = _failure("search", step, headline, failure)
+            return SearchResult(False, message=message, step=step, reason=reason)
         hits = []
         for match in matches:
             meta = match.get("metadata") or {}
@@ -203,11 +382,9 @@ async def search(query: str, role_filter: str | None = None) -> SearchResult:
             hits.append({"id": match.get("id", ""), "role": str(meta.get("role", "")), "title": str(meta.get("title", "")), "insight": str(meta.get("insight", "")),
                          "context": str(meta.get("context", "") or ""), "created_at": str(meta.get("created_at", "") or ""), "score": float(match.get("score", 0.0))})
         return SearchResult(True, hits[:TOP_K])
-    except asyncio.TimeoutError:
-        return SearchResult(False, message="ERROR: memory did not answer in time")
-    except Exception as exc:
-        logger.error("memory_tools: search failed (%s)", type(exc).__name__)
-        return SearchResult(False, message=f"ERROR: memory could not be searched ({type(exc).__name__})")
+    except Exception as exc:  # the last net: whatever it was, say what it was
+        message, reason = _failure("search", "internal", "Unexpected error inside the memory tool.", exc)
+        return SearchResult(False, message=message, step="internal", reason=reason)
 
 
 async def search_memory(query: str, role_filter: str | None = None) -> list[dict[str, Any]]:
@@ -247,25 +424,37 @@ async def handle(role: str, name: str, args: dict[str, Any], outcome: Any) -> tu
                 return f"Memory save limit reached ({MAX_SAVES_PER_TURN} per answer). Report what you have saved.", False, "memory:save", None
             outcome.memory_saves += 1
             result = await save(role.upper(), args.get("title"), args.get("insight"), args.get("context") or "")
-            await _log(role, {"tool": name, "ok": result.ok, "status": result.status, "vector_id": result.vector_id})
+            await _log(role, {"tool": name, "ok": result.ok, "status": result.status, "vector_id": result.vector_id, **_why(result.step, result.reason)})
             return result.message, result.ok, "memory:save", 1 if result.status == "saved" else 0
         if outcome.memory_searches >= MAX_SEARCHES_PER_TURN:
             return f"Memory search limit reached ({MAX_SEARCHES_PER_TURN} per answer). Work with the notes you have.", False, "memory:search", None
         outcome.memory_searches += 1
         wanted = args.get("role_filter") if isinstance(args.get("role_filter"), str) else None
         found = await search(args.get("query"), wanted)
-        await _log(role, {"tool": name, "ok": found.ok, "vector_id": ""})
+        await _log(role, {"tool": name, "ok": found.ok, "vector_id": "", **_why(found.step, found.reason)})
         if not found.ok:
             return found.message, False, "memory:search", None
         return render_hits(found.hits, wanted), True, "memory:search", len(found.hits)
-    except Exception as exc:  # memory must never take the app down
-        logger.error("memory_tools: %s failed (%s)", name, type(exc).__name__)
-        return "ERROR: the memory action could not be completed", False, "", None
+    except Exception as exc:  # memory must never take the app down, and must never be silent about why
+        action = "save" if name == SAVE_TOOL else "search"
+        message, _ = _failure(action, "internal", "Unexpected error inside the memory tool.", exc)
+        return message, False, f"memory:{action}", None
 
 
 async def save_memory(role: str, title: str, insight: str, context: str = "", *, source_chat_id: str | None = None) -> str:
-    """Save one memory and return a message that starts with 'Saved to memory: <title>' on success (or says 'ERROR: ...'). Never raises."""
+    """
+    Save one memory and return plain text for the agent. NEVER raises, and never returns a bare "error":
+      success   "Saved to memory: '<title>' (under <ROLE>)."
+      failure   "Failed to save memory: <what failed and what to check> Details: <the real error text>."
+    ``save`` checks the three required environment variables before anything else, so a missing key is reported without touching the database.
+    """
     return (await save(role, title, insight, context, source_chat_id=source_chat_id)).message
+
+
+def _why(step: str, reason: str) -> dict[str, str]:
+    """The failure's step and (already scrubbed) reason for the audit entry; empty when nothing failed."""
+    return {"step": step, "reason": reason} if step else {}
+
 
 # ------------------------------------------------------------------------------------------------ the ExecutiveMemory table
 def _claim_sync(memory_id: str, vid: str, role: str, title: str, insight: str, context: str | None, source_chat_id: str | None) -> bool:
@@ -289,7 +478,8 @@ def _log_sync(role: str, entry: dict[str, Any]) -> None:
 
 
 async def _log(role: str, entry: dict[str, Any]) -> None:
-    print(f"{role.upper()} memory: {entry['tool']} ok={entry['ok']} {entry.get('vector_id', '')}", flush=True)
+    failed = f" FAILED at {entry['step']}: {entry.get('reason', '')}" if entry.get("step") else ""
+    print(f"{role.upper()} memory: {entry['tool']} ok={entry['ok']} {entry.get('vector_id', '')}{failed}", flush=True)
     if not db.is_configured():
         return
     try:

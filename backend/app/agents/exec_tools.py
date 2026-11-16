@@ -308,6 +308,9 @@ async def handle_block(role: str, block: Any, outcome: ExecOutcome) -> dict[str,
         return _result(block, text, not ok)
     except Exception as exc:  # a read tool must never take the app down
         logger.error("exec_tools: %s failed (%s)", name, type(exc).__name__)
+        if name in memory_tools.TOOL_NAMES:  # never the generic line for memory: say which tool, and the real error (scrubbed), so production can be diagnosed
+            action = "save" if name == memory_tools.SAVE_TOOL else "search"
+            return _result(block, memory_tools._failure(action, "internal", "Unexpected error while running the memory tool.", exc)[0], True)
         return _result(block, "ERROR: the read could not be completed", True)
 
 
