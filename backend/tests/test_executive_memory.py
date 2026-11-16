@@ -313,35 +313,7 @@ class SaveSafetyTests(WithDb):
         self.save("CAO", f"{TAG} Same Lesson", "Never feed at   night when oxygen is low.", "")
         self.assertEqual(self.save("CAO", f"{TAG} same lesson", "never feed at night when oxygen is low.", "").status, "duplicate")
 
-    def test_a_failed_embedding_or_upsert_keeps_nothing_and_the_lesson_can_be_saved_again(self):
-        self.openai.fail = RuntimeError("OpenAI is down")
-        failed = self.save()
-        self.assertEqual((failed.status, self.rows()), ("failed", []))  # the claim was released
-        self.assertNotIn("OpenAI is down", failed.message)  # only the error TYPE is reported
-        self.openai.fail = None
-        self.index.fail_upsert = ConnectionError("pinecone down")
-        self.assertEqual((self.save().status, self.rows()), ("failed", []))
-        self.index.fail_upsert = None
-        self.assertEqual(self.save().status, "saved")
-        self.assertEqual(len(self.rows()), 1)
-
-    def test_a_timeout_releases_the_claim_too(self):
-        async def slow(text):
-            await asyncio.sleep(1)
-
-        with mock.patch.object(memory_tools, "TIMEOUT_SECONDS", 0.05), mock.patch.object(embeddings, "generate_embedding", slow):
-            result = self.save()
-        self.assertEqual((result.status, self.rows()), ("failed", []))
-        self.assertIn("timed out", result.message)
-
-    def test_without_the_keys_or_database_it_says_so_plainly_and_never_raises(self):
-        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
-            self.assertIn("OPENAI_API_KEY", self.save().message)
-            self.assertEqual(run(memory_tools.search_memory("oxygen feed")), [])
-        with mock.patch.dict(os.environ, {"GOVERNANCE_DATABASE_URL": "", "DATABASE_URL": ""}):
-            self.assertIn("not configured", self.save().message)
-        self.assertEqual((self.openai.inputs, self.rows()), ([], []))
-
+    # (the failure-reporting tests that used to be here are in TheToolSaysExactlyWhatFailedTests below)
 
 class ModelFacingToolTests(WithDb):
     def call(self, as_role, name, outcome=None, **args):  # ``as_role`` so a test can also pass a model-written ``role`` argument
@@ -406,6 +378,228 @@ class ModelFacingToolTests(WithDb):
         self.assertEqual([(r["actorId"], r["action"], r["targetType"]) for r in rows], [("ai_cao", "executive_memory", "ExecutiveMemory")] * 2)
         self.assertEqual([r["details"]["tool"] for r in rows], ["save_memory", "search_memory"])
         self.assertNotIn("dissolved", str([r["details"] for r in rows]))  # what was saved or searched is never logged
+
+
+# ================================================================================================ FAILURES ARE REPORTED EXACTLY, IN PLAIN TEXT, NEVER RAISED
+def pg_error(code: str, message: str) -> Exception:
+    """An error shaped like the one pg8000 raises: a DatabaseError whose first argument is the server's own error dict."""
+    import pg8000.exceptions as pe
+
+    return pe.DatabaseError({"S": "ERROR", "C": code, "M": message})
+
+
+class TheToolSaysExactlyWhatFailedTests(WithDb):
+    """The agent must be told WHICH step failed, what to check and the real error text, as a plain string. No exception may escape, and no secret may leak."""
+
+    FAILED = "Failed to save memory: "
+
+    def reset_state(self):
+        self.assertEqual((self.rows(), self.index.upserts), ([], []))  # a failed save keeps nothing, in the database or in Pinecone
+
+    def test_missing_environment_variables_are_reported_first_before_anything_else_happens(self):
+        for name in ("OPENAI_API_KEY", "PINECONE_API_KEY", "PINECONE_INDEX"):
+            for blank in ("", "   "):  # missing, empty, or only spaces
+                with mock.patch.dict(os.environ, {name: blank}):
+                    message = run(memory_tools.save_memory("CAO", DO_TITLE, DO_INSIGHT, DO_CONTEXT))
+                self.assertTrue(message.startswith(self.FAILED + "Required environment variables (OPENAI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX) are missing from the backend."), message)
+                self.assertIn(name, message.split("Missing right now:")[1])  # and it names the one that is missing
+        self.assertEqual(self.openai.inputs, [])  # not one embedding was paid for
+        self.reset_state()
+
+    def test_the_environment_check_runs_before_the_input_is_even_looked_at(self):
+        with mock.patch.dict(os.environ, {"PINECONE_INDEX": ""}):
+            result = run(memory_tools.save("NOT-A-ROLE", "", ""))
+        self.assertEqual((result.status, result.step), ("failed", "environment"))
+
+    def test_search_also_says_the_environment_is_missing_and_never_returns_a_silent_empty_list_as_an_error(self):
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+            found = run(memory_tools.search("oxygen and feed"))
+            text = run(memory_tools.handle("cao", "search_memory", {"query": "oxygen and feed"}, exec_tools.ExecOutcome("cao")))
+        self.assertFalse(found.ok)
+        self.assertTrue(found.message.startswith("Failed to search memory: Required environment variables"), found.message)
+        self.assertEqual((text[1], text[0].startswith("Failed to search memory:")), (False, True))
+
+    def test_a_missing_database_url_is_reported_as_a_database_problem(self):
+        with mock.patch.dict(os.environ, {"GOVERNANCE_DATABASE_URL": "", "DATABASE_URL": ""}):
+            message = run(memory_tools.save_memory("CAO", DO_TITLE, DO_INSIGHT, DO_CONTEXT))
+        self.assertTrue(message.startswith(self.FAILED + "Database error."), message)
+        self.assertIn("GOVERNANCE_DATABASE_URL", message)
+        self.assertEqual(self.openai.inputs, [])
+
+    def test_a_missing_table_says_to_apply_the_migration_and_gives_the_real_database_message(self):
+        with mock.patch.object(memory_tools, "_claim_sync", side_effect=pg_error("42P01", 'relation "ExecutiveMemory" does not exist')):
+            message = run(memory_tools.save_memory("CAO", DO_TITLE, DO_INSIGHT, DO_CONTEXT))
+        self.assertTrue(message.startswith(self.FAILED + "Database error. The ExecutiveMemory table does not exist"), message)
+        self.assertIn("db:deploy", message)
+        self.assertIn('Details: relation "ExecutiveMemory" does not exist (SQLSTATE 42P01)', message)
+        self.assertEqual(self.openai.inputs, [])  # the database failed first, so OpenAI was never called
+
+    def test_each_database_failure_gets_its_own_plain_explanation(self):
+        cases = ((pg_error("42703", 'column "context" does not exist'), "columns do not match"), (pg_error("28P01", "password authentication failed"), "rejected the login"),
+                 (pg_error("3D000", 'database "nope" does not exist'), "does not exist"), (pg_error("23505", "duplicate key"), "Ensure GOVERNANCE_DATABASE_URL"),
+                 (ConnectionRefusedError("connection refused"), "Could not connect to the database"), (TimeoutError("timed out"), "Could not connect to the database"))
+        for error, expected in cases:
+            with mock.patch.object(memory_tools, "_claim_sync", side_effect=error):
+                result = self.save()
+            self.assertEqual((result.status, result.step), ("failed", "database"), repr(error))
+            self.assertTrue(result.message.startswith(self.FAILED + "Database error."), result.message)
+            self.assertIn(expected, result.message, repr(error))
+            self.assertIn("Details:", result.message)
+
+    def test_an_openai_failure_names_openai_and_tells_apart_a_bad_key_a_quota_and_a_network_problem(self):
+        import httpx
+        import openai
+
+        request = httpx.Request("POST", "https://api.openai.com/v1/embeddings")
+
+        def api_error(cls, status, message):
+            return cls(message, response=httpx.Response(status, request=request), body=None)
+
+        cases = ((api_error(openai.AuthenticationError, 401, "Incorrect API key provided"), "OPENAI_API_KEY is missing, invalid"),
+                 (api_error(openai.RateLimitError, 429, "You exceeded your current quota"), "rate-limited, or the OpenAI account is out of quota"),
+                 (openai.APIConnectionError(request=request), "could not reach OpenAI"))
+        for error, expected in cases:
+            self.openai.fail = error
+            result = self.save()
+            self.assertEqual((result.status, result.step), ("failed", "embedding"), repr(error))
+            self.assertTrue(result.message.startswith(self.FAILED + "OpenAI embedding error."), result.message)
+            self.assertIn(expected, result.message)
+            self.assertIn("Details:", result.message)
+            self.reset_state()  # the row that was claimed was released: nothing is left behind
+
+    def test_the_real_openai_error_text_reaches_the_agent_through_the_librarys_wrapper(self):
+        import httpx
+        import openai
+
+        self.openai.fail = openai.RateLimitError("You exceeded your current quota, please check your plan and billing details.",
+                                                 response=httpx.Response(429, request=httpx.Request("POST", "https://api.openai.com/v1/embeddings")), body=None)
+        message = self.save().message
+        self.assertIn("OpenAI embeddings request failed: RateLimitError", message)  # our wrapper's line
+        self.assertIn("You exceeded your current quota", message)  # and the real reason behind it, from the cause chain
+
+    def test_a_pinecone_failure_names_pinecone_and_tells_apart_a_bad_key_a_missing_index_and_a_wrong_size(self):
+        import pinecone.exceptions as pc
+
+        cases = ((pc.UnauthorizedException(), "PINECONE_API_KEY is missing, invalid"), (pc.NotFoundException("Index memory-index not found"), "index named in PINECONE_INDEX was not found"),
+                 (pc.PineconeConfigurationError("bad config"), "configuration is invalid"), (pc.ServiceException(), "server-side problem"),
+                 (ValueError("Vector dimension 768 does not match the dimension of the index 1536"), "wrong dimension"))
+        for error, expected in cases:
+            self.index.fail_upsert = error
+            result = self.save()
+            self.assertEqual((result.status, result.step), ("failed", "pinecone"), repr(error))
+            self.assertTrue(result.message.startswith(self.FAILED + "Pinecone error."), result.message)
+            self.assertIn(expected, result.message, repr(error))
+            self.assertIn("Details:", result.message)
+            self.assertEqual(self.rows(), [])  # the database row was taken back
+
+    def test_a_pinecone_connection_failure_while_opening_the_index_is_a_pinecone_error_too(self):
+        with mock.patch.object(vector_db, "_create_client", side_effect=RuntimeError("could not resolve host")):
+            result = self.save()
+        self.assertEqual((result.status, result.step), ("failed", "pinecone"))
+        self.assertIn("Could not connect to Pinecone index", result.message)  # vector_db's own wrapper message is passed on
+        self.assertIn("RuntimeError", result.message)
+
+    def test_a_timeout_names_which_service_did_not_answer(self):
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(1)
+
+        with mock.patch.object(memory_tools, "TIMEOUT_SECONDS", 0.05), mock.patch.object(embeddings, "generate_embedding", slow):
+            first = self.save()
+        self.assertTrue(first.message.startswith(self.FAILED + "OpenAI timed out"), first.message)
+        self.assertEqual(first.step, "embedding")
+        with mock.patch.object(memory_tools, "TIMEOUT_SECONDS", 0.05), mock.patch.object(vector_db, "upsert_chunks", slow):
+            second = self.save()
+        self.assertTrue(second.message.startswith(self.FAILED + "Pinecone timed out"), second.message)
+        self.assertEqual(second.step, "pinecone")
+        self.assertEqual(self.rows(), [])
+
+    def test_search_reports_an_openai_or_a_pinecone_failure_by_name_too(self):
+        import pinecone.exceptions as pc
+
+        self.openai.fail = RuntimeError("OpenAI is down")
+        found = run(memory_tools.search("oxygen and feed"))
+        self.assertTrue(found.message.startswith("Failed to search memory: OpenAI embedding error."), found.message)
+        self.openai.fail = None
+        with mock.patch.object(vector_db, "query_vectors", side_effect=pc.UnauthorizedException()):
+            found = run(memory_tools.search("oxygen and feed"))
+        self.assertTrue(found.message.startswith("Failed to search memory: Pinecone error. PINECONE_API_KEY"), found.message)
+        self.assertEqual((found.ok, found.hits), (False, []))
+
+    def test_no_secret_is_ever_repeated_in_an_error_the_agent_sees(self):
+        key, db_password = "sk-" + "Zz9Yy8Xx" * 5, "hunter2-secret-pw"
+        self.openai.fail = RuntimeError(f"Incorrect API key provided: {key}")
+        with mock.patch.dict(os.environ, {"PINECONE_API_KEY": "pcsk-live-value-12345"}):
+            first = self.save().message
+            self.openai.fail = None
+            self.index.fail_upsert = RuntimeError("401 for key pcsk-live-value-12345")
+            second = self.save().message
+        self.assertNotIn(key, first)
+        self.assertNotIn("pcsk-live-value-12345", second)
+        self.assertIn("[PINECONE_API_KEY]", second)
+        with mock.patch.object(memory_tools, "_claim_sync", side_effect=RuntimeError(f"could not connect to postgres://admin:{db_password}@db.example.com:5432/app")):
+            third = self.save().message
+        self.assertNotIn(db_password, third)
+        self.assertIn("postgres://[credentials]@db.example.com", third)
+
+    def test_a_long_error_is_cut_so_it_cannot_flood_the_answer(self):
+        self.openai.fail = RuntimeError("x" * 5000)
+        detail = self.save().message.split("Details: ")[1]
+        self.assertLessEqual(len(detail), memory_tools.MAX_DETAIL + 40)  # the cut detail, then a short closing sentence
+
+    def test_an_error_that_cannot_even_describe_itself_still_gives_a_plain_message(self):
+        class Unprintable(Exception):
+            def __str__(self):
+                raise RuntimeError("no str for you")
+
+        self.openai.fail = Unprintable()
+        result = self.save()
+        self.assertEqual((result.status, result.step), ("failed", "embedding"))
+        self.assertTrue(result.message.startswith(self.FAILED + "OpenAI embedding error."), result.message)
+
+    def test_the_handler_never_raises_and_says_which_tool_and_what_when_something_unexpected_breaks(self):
+        with mock.patch.object(memory_tools, "save", side_effect=ValueError("boom inside save")):
+            text, ok, target, _ = run(memory_tools.handle("cao", "save_memory", {"title": "a title", "insight": "an insight long enough"}, exec_tools.ExecOutcome("cao")))
+        self.assertEqual((ok, target), (False, "memory:save"))
+        self.assertTrue(text.startswith("Failed to save memory: Unexpected error inside the memory tool."), text)
+        self.assertIn("boom inside save", text)
+        self.assertNotIn("could not be completed", text)  # not the old generic line
+
+    def test_the_tool_loop_never_turns_a_memory_failure_into_a_generic_error(self):
+        with mock.patch.object(memory_tools, "handle", side_effect=KeyError("surprise")):
+            result = run(exec_tools.handle_block("cao", block("save_memory", title="a title", insight="an insight long enough"), exec_tools.ExecOutcome("cao")))
+        self.assertTrue(result["is_error"])
+        self.assertTrue(result["content"].startswith("Failed to save memory: Unexpected error while running the memory tool."), result["content"])
+        self.assertIn("surprise", result["content"])
+
+    def test_the_step_and_the_real_reason_are_written_to_the_audit_table_and_the_log_and_never_the_text_saved(self):
+        import contextlib
+        import io
+
+        self.index.fail_upsert = ConnectionError("pinecone connection reset")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run(exec_tools.handle_block("coo", block("save_memory", title=DO_TITLE, insight=DO_INSIGHT, context=DO_CONTEXT), exec_tools.ExecOutcome("coo")))
+        details = self.audit_rows()[0]["details"]
+        self.assertEqual((details["ok"], details["status"], details["step"]), (False, "failed", "pinecone"))
+        self.assertIn("pinecone connection reset", details["reason"])
+        self.assertNotIn("dissolved", str(details))  # the lesson's own text is not logged
+        self.assertIn("FAILED at pinecone", out.getvalue())  # Render's logs say it too
+
+    def test_a_failed_save_can_always_be_saved_again_once_the_cause_is_fixed(self):
+        self.index.fail_upsert = ConnectionError("down")
+        self.assertEqual(self.save().status, "failed")
+        self.index.fail_upsert = None
+        self.assertEqual(self.save().status, "saved")
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_if_even_taking_the_row_back_fails_the_agent_is_told_how_to_retry(self):
+        self.index.fail_upsert = ConnectionError("down")
+        with mock.patch.object(memory_tools, "_release_sync", side_effect=pg_error("57P01", "terminating connection")):
+            result = self.save()
+        self.assertEqual(result.status, "failed")
+        self.assertIn("could not be removed afterwards", result.message)
+        self.assertIn("save it again to retry", result.message)
+        self.assertNotIn("Nothing was kept", result.message)  # it would be untrue: the row is still there
 
 
 # ================================================================================================ PROMPTS AND LIBRARY ISOLATION (no database needed)
