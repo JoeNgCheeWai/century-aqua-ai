@@ -18,22 +18,41 @@ import { refusal, staffArea, staffGate } from "@/lib/staff-gate";
 // locked by the PIN session cookie (see lib/mc-auth.ts), so it works even where Clerk is not configured. It is checked
 // here first, and every /api/mc handler checks the cookie again.
 
+// LOGGING (added while diagnosing a 403 on POST /api/mc/agents/cto that left no function logs). It records the PATH and METHOD of every request that
+// reaches this proxy, and the status of any response the proxy itself decides to send. Never the query string, a cookie, a header or a body, so nothing
+// secret can reach a log. A request that is in Vercel's request log but has NO "[MIDDLEWARE] Request" line never reached this proxy: it was answered
+// before it (the Vercel firewall or a platform rule), and no code in this repository can change that.
+function logRequest(request: NextRequest): void {
+  console.log("[MIDDLEWARE] Request:", { pathname: request.nextUrl.pathname, method: request.method });
+}
+
+function logDecision<T extends NextResponse | undefined>(request: NextRequest, response: T): T {
+  if (response) {
+    const pathname = request.nextUrl.pathname;
+    if (response.status === 403) console.log("[MIDDLEWARE] Returning 403", { pathname, method: request.method });
+    else if (response.status >= 400) console.log(`[MIDDLEWARE] Returning ${response.status}`, { pathname, method: request.method });
+  }
+  return response;
+}
+
 const clerkProxy = clerkMiddleware(async (auth, request) => {
-  if (mcArea(request.nextUrl.pathname)) return mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value);
+  logRequest(request);
+  if (mcArea(request.nextUrl.pathname)) return logDecision(request, mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value));
   // Only staff-area paths need the (database) check; everything else passes straight through.
   if (!staffArea(request.nextUrl.pathname)) return;
   const { userId } = await auth();
-  return staffGate(request.nextUrl, userId);
+  return logDecision(request, await staffGate(request.nextUrl, userId));
 });
 
 export default clerkConfigured
   ? clerkProxy
   : (request: NextRequest) => {
+      logRequest(request);
       if (mcArea(request.nextUrl.pathname)) {
-        return mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value) ?? NextResponse.next();
+        return logDecision(request, mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value)) ?? NextResponse.next();
       }
       const area = staffArea(request.nextUrl.pathname);
-      if (area) return refusal(503, area, request.nextUrl);
+      if (area) return logDecision(request, refusal(503, area, request.nextUrl));
       return NextResponse.next();
     };
 
