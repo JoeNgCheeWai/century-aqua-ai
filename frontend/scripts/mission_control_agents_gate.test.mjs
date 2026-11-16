@@ -61,17 +61,21 @@ test("the proxy source has no agent-specific branch and no 403 response of its o
   assert.match(staff, /\^\\\/api\\\/\(internal\|admin\)/);
 });
 
-test("the proxy logs the path and method of every request and says so before it returns a 403, and never logs a cookie, header, query or body", () => {
+test("the proxy logs a refusal (403 and every other 4xx/5xx) with path and method only, logs nothing for a request that passes, and never logs a cookie, header, query or body", () => {
   const proxy = readFileSync(new URL("../src/proxy.ts", import.meta.url), "utf8");
-  assert.ok(proxy.includes('console.log("[MIDDLEWARE] Request:", { pathname: request.nextUrl.pathname, method: request.method })'));
-  assert.ok(proxy.includes('console.log("[MIDDLEWARE] Returning 403"'));
+  assert.ok(proxy.includes('console.log("[MIDDLEWARE] Returning 403", { pathname, method: request.method })'));
+  assert.ok(proxy.includes("else if (response.status >= 400) console.log(`[MIDDLEWARE] Returning ${response.status}`"));
+  // The per-request line was removed: it fired on every page load and health poll. Only decisions that refuse are logged.
+  assert.ok(!proxy.includes("[MIDDLEWARE] Request"), "the per-request log line must stay removed");
+  assert.ok(!proxy.includes("logRequest"), "no per-request logger");
+  assert.equal([...proxy.matchAll(/console\.log\(/g)].length, 2, "exactly two log statements: a 403 and any other 4xx/5xx");
   const logged = [...proxy.matchAll(/console\.log\(([^;]*)\);/g)].map((m) => m[1]).join(" ");
   for (const secret of ["cookie", "cookies", "headers", "search", "searchParams", "body", "authorization", "SESSION_COOKIE", "token"]) {
     assert.ok(!new RegExp(`\\b${secret}\\b`, "i").test(logged), `a log line mentions ${secret}`);
   }
 });
 
-test("the middleware matcher covers /api/mc/agents/cto (so the logging line WILL appear if the request reaches the proxy)", () => {
+test("the middleware matcher covers /api/mc/agents/cto (so a refusal there would be logged if the proxy sent it)", () => {
   const proxy = readFileSync(new URL("../src/proxy.ts", import.meta.url), "utf8");
   // Take the real matcher strings out of the source and apply them the way Next does (path-to-regexp style, anchored at both ends).
   const block = proxy.slice(proxy.indexOf("matcher: ["));
