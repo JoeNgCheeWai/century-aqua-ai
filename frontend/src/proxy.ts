@@ -18,14 +18,10 @@ import { refusal, staffArea, staffGate } from "@/lib/staff-gate";
 // locked by the PIN session cookie (see lib/mc-auth.ts), so it works even where Clerk is not configured. It is checked
 // here first, and every /api/mc handler checks the cookie again.
 
-// LOGGING (added while diagnosing a 403 on POST /api/mc/agents/cto that left no function logs). It records the PATH and METHOD of every request that
-// reaches this proxy, and the status of any response the proxy itself decides to send. Never the query string, a cookie, a header or a body, so nothing
-// secret can reach a log. A request that is in Vercel's request log but has NO "[MIDDLEWARE] Request" line never reached this proxy: it was answered
-// before it (the Vercel firewall or a platform rule), and no code in this repository can change that.
-function logRequest(request: NextRequest): void {
-  console.log("[MIDDLEWARE] Request:", { pathname: request.nextUrl.pathname, method: request.method });
-}
-
+// LOGGING. When the proxy itself refuses a request (any 4xx or 5xx) it says so, with the PATH and METHOD only: never the query string, a cookie, a
+// header or a body, so nothing secret can reach a log. There is deliberately NO line for requests that pass: it would fire on every page load and
+// health poll. (It was there briefly while a 403 on POST /api/mc/agents/cto was diagnosed; that 403 was a browser extension, not this code. See
+// PROJECT_CONTEXT.md Section 28.) A refusal that Vercel's request log shows but that has no "[MIDDLEWARE] Returning" line here was not sent by this proxy.
 function logDecision<T extends NextResponse | undefined>(request: NextRequest, response: T): T {
   if (response) {
     const pathname = request.nextUrl.pathname;
@@ -36,7 +32,6 @@ function logDecision<T extends NextResponse | undefined>(request: NextRequest, r
 }
 
 const clerkProxy = clerkMiddleware(async (auth, request) => {
-  logRequest(request);
   if (mcArea(request.nextUrl.pathname)) return logDecision(request, mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value));
   // Only staff-area paths need the (database) check; everything else passes straight through.
   if (!staffArea(request.nextUrl.pathname)) return;
@@ -47,7 +42,6 @@ const clerkProxy = clerkMiddleware(async (auth, request) => {
 export default clerkConfigured
   ? clerkProxy
   : (request: NextRequest) => {
-      logRequest(request);
       if (mcArea(request.nextUrl.pathname)) {
         return logDecision(request, mcGate(request.nextUrl, request.cookies.get(SESSION_COOKIE)?.value)) ?? NextResponse.next();
       }
