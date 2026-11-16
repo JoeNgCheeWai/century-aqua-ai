@@ -175,7 +175,8 @@ class SchemasAreUntouchedTests(unittest.TestCase):
 
     def test_the_prompts_stay_inside_a_sane_size(self):
         for agent, module in AGENTS.items():
-            self.assertLess(len(module.BASE_SYSTEM_PROMPT) // 4, 16_000, f"{agent} prompt is over ~16k tokens")
+            # Raised from 16_000 to 16_500 for the short knowledge-intake line (see test_executive_parity). A ceiling, not a target.
+            self.assertLess(len(module.BASE_SYSTEM_PROMPT) // 4, 16_500, f"{agent} prompt is over ~16.5k tokens")
 
 
 CTO = cto_agent.BASE_SYSTEM_PROMPT

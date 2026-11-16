@@ -118,7 +118,8 @@ class TheOldNoToolsWordingWasCorrectedNotLeftContradictingTests(unittest.TestCas
         self.assertIn(persona.REDIRECTS["cto"], SYSTEM)
 
     def test_the_prompt_stays_in_a_sane_size(self):
-        self.assertLess(len(SYSTEM) // 4, 16000)  # about 11k tokens now; far below the model's context window
+        # Raised from 16000 to 16500 for the short knowledge-intake line (about 60 tokens; see test_executive_parity). A ceiling, not a target.
+        self.assertLess(len(SYSTEM) // 4, 16500)
 
 
 class TheCtoStillAnswersInTheSharedFormatTests(unittest.TestCase):
