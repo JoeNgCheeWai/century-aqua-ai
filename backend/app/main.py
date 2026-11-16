@@ -30,6 +30,7 @@ from app.api.council import router as council_router
 from app.api.council_sessions import router as council_sessions_router
 from app.api.cross_check import router as cross_check_router
 from app.api.cto import router as cto_router
+from app.api.documents import router as documents_router
 from app.api.operations import router as operations_router
 
 app = FastAPI(title="Century Aquaculture Intelligence Platform (CAIP)")
@@ -55,6 +56,9 @@ app.include_router(authorization_router)
 app.include_router(operations_router)
 app.include_router(cross_check_router)
 app.include_router(reset_router)
+# Document reading (POST /api/documents/read) has its OWN INTERNAL_DOCS_KEY; no agent key opens it, and it
+# answers 503 until that key is set.
+app.include_router(documents_router)
 
 # Comma-separated list of allowed frontend origins (no trailing slashes).
 # Defaults keep local development working.
