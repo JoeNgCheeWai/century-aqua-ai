@@ -25,17 +25,19 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
+from app.agents import language_guard
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
-from app.agents.cao_reasoning import parse_cao_output
+from app.agents.cao_reasoning import STRUCTURED_CHAT_REPLY_CHARS, parse_cao_output
 from app.agents.chat_reply import vetted_chat_reply
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance import operations_log, strategy_store
 from app.governance.scoring import extract_sources, score_response
-from app.prompts.chat_style import CHAT_REPLY_PROMPT
+from app.prompts.chat_style import COO_CHAT_REPLY_PROMPT
 from app.prompts.coo_prompt import COO_REASONING_PROMPT, COO_SYSTEM_PROMPT
 from app.prompts.persona import expert_role, persona_block, thinking_process
+from app.prompts.role_protocols import role_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +47,8 @@ AGENT_ID = "coo"
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution).
 # Then the top-operations-expert role and the Strategic Thinking Process (its three steps go inside the existing reasoning_chain).
 COO_ROLE_PROMPT = (
-    persona_block("coo") + "\n\n" + expert_role("coo") + "\n\n" + thinking_process("coo") + "\n\n"
-    + COO_SYSTEM_PROMPT + "\n\n" + COO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT
+    persona_block("coo") + "\n\n" + expert_role("coo") + "\n\n" + role_protocol("coo") + "\n\n" + thinking_process("coo") + "\n\n"
+    + COO_SYSTEM_PROMPT + "\n\n" + COO_REASONING_PROMPT + "\n\n" + COO_CHAT_REPLY_PROMPT
 )
 
 # The constitution comes FIRST, then the COO's own role prompt (Executive Constitution, Clause 0).
@@ -204,7 +206,7 @@ async def get_coo_result(
     )
 
     raw = "".join(block.text for block in response.content if block.type == "text")
-    parsed = parse_cao_output(raw)
+    parsed = parse_cao_output(raw, chat_reply_chars=STRUCTURED_CHAT_REPLY_CHARS)
     if parsed.findings:
         logger.warning("COO output format: %s", "; ".join(parsed.findings))
 
@@ -216,10 +218,18 @@ async def get_coo_result(
         model_text += "\n\n" + "\n".join(parsed.reasoning_chain)
     score = score_response(model_text)
 
-    text = parsed.response
+    # THE LANGUAGE GUARD (language_guard.py), after scoring so the score stays on the model's own words. It relabels the robotic phrases, removes a
+    # sentence that hands the CEO's routine task to "your operations manager" or offers to build it later, and KEEPS any sentence that states a
+    # binding sign-off or carries a concrete instruction. A cross-check verdict passes through untouched.
+    guarded_text = language_guard.guard(parsed.response, AGENT_ID)
+    guarded_chat = language_guard.guard(parsed.chat_reply, AGENT_ID)
+    guard_findings = language_guard.findings(guarded_text, AGENT_ID) + language_guard.findings(guarded_chat, AGENT_ID)
+    if guard_findings:
+        logger.warning("COO language guard: %s", "; ".join(guard_findings))
+    text = guarded_text.text
     if response.stop_reason == "max_tokens":
         text += "\n\n[Response reached the length limit. Ask me to continue for the remainder.]"
-    if "recommendation for human review:" not in parsed.response.lower():
+    if "recommendation for human review:" not in guarded_text.text.lower():
         text += "\n\n" + FRAMING_NOTICE
     if sources:
         from app.rag.retrieval import format_sources_note
@@ -252,8 +262,8 @@ async def get_coo_result(
         reasoning_chain=parsed.reasoning_chain,
         scenarios=parsed.scenarios,
         pre_consultation_requests=parsed.pre_consultation_requests,
-        format_findings=parsed.findings,
-        chat_reply=vetted_chat_reply(parsed.chat_reply),
+        format_findings=[*parsed.findings, *guard_findings],
+        chat_reply=vetted_chat_reply(guarded_chat.text or None),
         model=model_id,
     )
 

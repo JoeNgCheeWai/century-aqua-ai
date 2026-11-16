@@ -30,19 +30,20 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
-from app.agents import image_tool, operational_approval
+from app.agents import image_tool, language_guard, operational_approval
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
-from app.agents.cao_reasoning import load_json_object, parse_cao_output
+from app.agents.cao_reasoning import STRUCTURED_CHAT_REPLY_CHARS, load_json_object, parse_cao_output
 from app.agents.chat_reply import vetted_chat_reply
 from app.agents.cmo_authorization import audit_summary, normalize_authorization_request
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
-from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CHAT_REPLY_PROMPT, CMO_UI_PROMPT
+from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CMO_CHAT_REPLY_PROMPT, CMO_UI_PROMPT
 from app.prompts.cmo_prompt import CMO_REASONING_PROMPT, CMO_SYSTEM_PROMPT
 from app.prompts.persona import expert_role, persona_block, thinking_process
+from app.prompts.role_protocols import role_protocol
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ AGENT_ID = "cmo"
 # The shared voice / plain-language / scope directives go FIRST in the role prompt (right after the constitution). The
 # authorization workflow, the generate_image tool text and the JSON format below are unchanged.
 CMO_ROLE_PROMPT = (
-    persona_block("cmo") + "\n\n" + expert_role("cmo") + "\n\n" + thinking_process("cmo") + "\n\n" + CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    persona_block("cmo") + "\n\n" + expert_role("cmo") + "\n\n" + role_protocol("cmo") + "\n\n" + thinking_process("cmo") + "\n\n" + CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CMO_CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CMO_UI_PROMPT
 )
 
@@ -283,7 +284,7 @@ async def get_cmo_result(
         )
 
     raw = "".join(block.text for block in response.content if block.type == "text")
-    parsed = parse_cao_output(raw)
+    parsed = parse_cao_output(raw, chat_reply_chars=STRUCTURED_CHAT_REPLY_CHARS)
     format_findings = list(parsed.findings)
 
     # The authorization_request is read from the same JSON object, but only when the object parsed as a
@@ -305,7 +306,16 @@ async def get_cmo_result(
     score = score_response(model_text)
 
 
-    text = parsed.response
+    # THE LANGUAGE GUARD (language_guard.py), after scoring so the score stays on the model's own words. It relabels the robotic phrases, removes a
+    # sentence that hands the CEO's routine creative task to "an agency" or offers to draft it later, and KEEPS any sentence that says a claim needs
+    # substantiation or a legal review (that is the claims discipline, not a hand-off) or carries a concrete instruction. A verdict passes through.
+    guarded_text = language_guard.guard(parsed.response, AGENT_ID)
+    guarded_chat = language_guard.guard(parsed.chat_reply, AGENT_ID)
+    guard_findings = language_guard.findings(guarded_text, AGENT_ID) + language_guard.findings(guarded_chat, AGENT_ID)
+    format_findings.extend(guard_findings)
+    if guard_findings:
+        logger.warning("CMO language guard: %s", "; ".join(guard_findings))
+    text = guarded_text.text
     if authorization_request is not None:
         text += "\n\n" + audit_summary(authorization_request)
     if response.stop_reason == "max_tokens":
@@ -315,7 +325,7 @@ async def get_cmo_result(
                 " The structured answer was cut off, so any authorization request it contained was NOT "
                 "recovered. Ask again, and do not publish content that was only partly delivered."
             )
-    if "recommendation for human review:" not in parsed.response.lower():
+    if "recommendation for human review:" not in guarded_text.text.lower():
         text += "\n\n" + FRAMING_NOTICE
     if sources:
         from app.rag.retrieval import format_sources_note
@@ -343,14 +353,18 @@ async def get_cmo_result(
         )
     # COO-LED APPROVAL (ships OFF: COO_AUTO_APPROVAL), same rule as the CTO's. The CMO has no file reader, so a plan that touches an EXISTING file
     # is never approved here (it was not read first): only a small plan of brand-new files can be. Anything else waits for the CEO. Never raises.
-    chat_text = parsed.chat_reply
+    chat_text = guarded_chat.text
+    note = ""
     if audit_id is not None and authorization_request is not None:
         routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request)
         note = operational_approval.approval_note(routed)
-        if note:
-            text += "\n\n" + note
-            if chat_text and chat_text.strip():
-                chat_text = chat_text.rstrip() + "\n\n" + note
+    if authorization_request is not None and not note:
+        # Not routed to the COO (the switch is off, or it was not eligible): the CEO still reads the same collaborative line, written by code.
+        note = language_guard.ready_note(bool(authorization_request.get("execution_plan")))
+    if note:
+        text += "\n\n" + note
+        if chat_text and chat_text.strip():
+            chat_text = chat_text.rstrip() + "\n\n" + note
     return CMOResult(
         reply=text,
         constitutional_score=score.score,

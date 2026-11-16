@@ -39,7 +39,8 @@ MAX_ITEM_CHARS = 500  # one reasoning step, timeline, assumption or risk
 MAX_LIST_ITEMS = 10  # assumptions or risks per scenario
 MAX_CHAIN_ENTRIES = 12  # reasoning_chain length (3-5 steps + data/assumptions/limitations)
 MAX_QUERY_CHARS = 1000  # a future COO/CTO question
-MAX_CHAT_REPLY_CHARS = 1200  # the 2-4 sentence conversational answer (Phase 6.5)
+MAX_CHAT_REPLY_CHARS = 1200  # the 2-4 sentence conversational answer (Phase 6.5). The default, and the cap of any caller that passes none.
+STRUCTURED_CHAT_REPLY_CHARS = 5000  # the structured reply (headings, numbered steps, bold) that all four executives now write (communication parity)
 
 
 # Phase 1: no COO or CTO exists, so nothing may be requested from them. The Council Protocol

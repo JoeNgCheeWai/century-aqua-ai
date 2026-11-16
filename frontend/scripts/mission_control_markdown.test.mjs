@@ -203,10 +203,151 @@ test("a realistic CTO reply is read into the structure the CEO should see", () =
   assert.equal(blocks[7].lines[0][0].kind, "bold");
 });
 
-test("the answer view draws the CTO's reply through the reader and every other executive as plain text", async () => {
+test("the answer view draws EVERY executive's reply through the reader (communication parity), not just the CTO's", async () => {
   const { readFileSync } = await import("node:fs");
   const view = readFileSync(new URL("../src/components/mc/AgentAnswerView.tsx", import.meta.url), "utf8");
-  assert.ok(view.includes('const formatted = agent === "cto";'));
+  assert.ok(view.includes("const formatted = AGENT_KEYS.includes(agent as AgentKey);"));
+  assert.ok(!view.includes('agent === "cto"'));
   assert.ok(view.includes("<MarkdownText text={chat ?? body} />"));
   assert.ok(view.includes('whitespace-pre-wrap text-sm leading-relaxed text-slate-100'));
+});
+
+// ---- Communication parity: the CAO, COO and CMO now write the same structured reply as the CTO, so each is checked with a realistic reply of
+// its own shape AND with hostile input dressed in that agent's own voice. The reader is one safe function for all four; these prove it.
+const REPLIES = {
+  cao: [
+    "### What I Am Seeing",
+    "Fish gulping at the surface at dawn is the first sign that **dissolved oxygen** is falling.",
+    "",
+    "### Why This Matters",
+    "Low oxygen stresses the fish before it kills them, so acting early protects the whole crop.",
+    "",
+    "### The Protocol",
+    "1. Measure oxygen at **05:30** and note the reading.",
+    "2. If it is under `4 mg/L`, run every aerator and **stop feeding** until it recovers.",
+    "3. Re-measure after `30 minutes`.",
+    "",
+    "### My Recommendation",
+    "Option 1: aerate now. Option 2: partial water exchange. I recommend option 1.",
+  ].join("\n"),
+  coo: [
+    "### The Constraint",
+    "Only **two** pond staff are on shift and the feed truck arrives on `Tuesday`.",
+    "",
+    "### The Plan",
+    "1. Monday: count feed stock and move the order to **Tuesday morning**.",
+    "2. Tuesday: both staff unload, then split ponds A and B.",
+    "- Cost: about `USD 480` in overtime (an illustrative assumption).",
+    "",
+    "### My Recommendation",
+    "Re-sequence the delivery. It costs less than a third crew.",
+  ].join("\n"),
+  cmo: [
+    "### Who It Is For",
+    "Farm owners deciding whether to try a new water-treatment product.",
+    "",
+    "### The Message",
+    "Cleaner water with fewer water changes.",
+    "",
+    "### The Copy",
+    "**Fewer water changes. Calmer ponds.**",
+    "```",
+    "Subject: Less water to change, more time to farm",
+    "```",
+    "",
+    "### What to Check Before It Goes Out",
+    "- Every claim needs a source. **Do not publish** until that is done.",
+  ].join("\n"),
+};
+
+for (const [agent, reply] of Object.entries(REPLIES)) {
+  test(`a realistic ${agent.toUpperCase()} reply is read into the structure its protocol asks for`, () => {
+    const blocks = parseMarkdown(reply);
+    assert.ok(blocks.filter((b) => b.kind === "heading").length >= 3);
+    assert.ok(blocks.some((b) => b.kind === "ordered" || b.kind === "bullets"));
+    assert.ok(blocks.some((b) => b.kind === "paragraph" && b.lines.some((l) => l.some((p) => p.kind === "bold"))) || blocks.some((b) => b.kind === "ordered" && b.items.some((i) => i.some((p) => p.kind === "bold"))));
+    assert.ok(hasMarkdown(reply));
+    assert.equal(blocks[0].kind, "heading"); // each agent leads with its own first heading (the risk, the constraint, the audience)
+  });
+}
+
+test("the CAO's exact figures in backticks are shown as code and keep their units", () => {
+  const blocks = parseMarkdown(REPLIES.cao);
+  const list = blocks.find((b) => b.kind === "ordered");
+  assert.equal(list.items.length, 3);
+  assert.equal(list.items[1].find((p) => p.kind === "code").text, "4 mg/L");
+  assert.equal(list.items[2].find((p) => p.kind === "code").text, "30 minutes");
+});
+
+test("the COO's costed plan keeps its numbers, its bullet and its bold constraint", () => {
+  const blocks = parseMarkdown(REPLIES.coo);
+  assert.equal(text(blocks[1].lines[0]), "Only two pond staff are on shift and the feed truck arrives on Tuesday.");
+  assert.ok(blocks.some((b) => b.kind === "bullets" && text(b.items[0]).includes("USD 480")));
+});
+
+test("the CMO's copy block is shown as code and nothing inside it is interpreted", () => {
+  const blocks = parseMarkdown(REPLIES.cmo);
+  const code = blocks.find((b) => b.kind === "code");
+  assert.equal(code.text, "Subject: Less water to change, more time to farm");
+  const [hostile] = parseMarkdown("```\n**not bold** <b>x</b> [a](javascript:alert(1))\n```");
+  assert.equal(hostile.kind, "code");
+  assert.equal(hostile.text, "**not bold** <b>x</b> [a](javascript:alert(1))");
+});
+
+const AGENT_HOSTILE = {
+  cao: "### The Protocol\n1. Dose <script>alert('cao')</script> at `5 mg/L`.\n2. [fish vet](javascript:alert(1)) ![x](http://evil/x.png)\n<img src=x onerror=alert(1)>",
+  coo: "### The Plan\n- <iframe src=\"//evil\"></iframe> cost **USD 1,200**\n1. [approve](data:text/html,<script>alert(1)</script>)\n<a href=\"javascript:alert(1)\">budget</a>",
+  cmo: "### The Copy\n**Buy now** <svg onload=alert(1)> [click](vbscript:msgbox(1))\n<style>body{display:none}</style>\n![pixel](https://tracker.example/p.gif)",
+};
+
+for (const [agent, reply] of Object.entries(AGENT_HOSTILE)) {
+  test(`hostile ${agent.toUpperCase()}-style text never becomes HTML, a link or an image, and stays visible as text`, () => {
+    const blocks = parseMarkdown(reply);
+    const kindsSeen = new Set();
+    const collect = (parts) => parts.forEach((p) => kindsSeen.add(p.kind));
+    for (const b of blocks) {
+      if (b.kind === "heading") collect(b.text);
+      else if (b.kind === "paragraph") b.lines.forEach(collect);
+      else if (b.kind === "ordered" || b.kind === "bullets") b.items.forEach(collect);
+    }
+    assert.ok([...kindsSeen].every((k) => ["text", "bold", "code"].includes(k)), [...kindsSeen].join());
+    const shown = blocks.map((b) => (b.kind === "code" ? b.text : b.kind === "heading" ? text(b.text) : b.kind === "paragraph" ? b.lines.map(text).join("\n") : b.items.map(text).join("\n"))).join("\n");
+    for (const needle of ["<script>", "javascript:", "<img", "<iframe", "<svg", "<style>", "vbscript:", "![", "data:text/html"]) {
+      if (reply.includes(needle)) assert.ok(shown.includes(needle), `${needle} was lost or turned into something else`);
+    }
+  });
+}
+
+test("a reply from any of the four with no markdown at all still comes out as ordinary paragraphs", () => {
+  for (const plain of ["Aerate now and recheck in half an hour.", "Move the delivery to Tuesday.", "Here is the post, ready to use."]) {
+    assert.equal(hasMarkdown(plain), false);
+    assert.deepEqual(kinds(parseMarkdown(plain)), ["paragraph"]);
+  }
+});
+
+test("an old plain reply with a few line breaks keeps its lines (nothing is merged or lost)", () => {
+  const [para] = parseMarkdown("Line one.\nLine two.\nLine three.");
+  assert.equal(para.kind, "paragraph");
+  assert.equal(para.lines.length, 3);
+});
+
+test("a structured reply of the maximum length the backend allows (5000 characters) is processed whole and quickly", () => {
+  const long = "### Step\n" + "1. **Do** the thing `now`.\n".repeat(180);
+  assert.ok(long.length > 4500 && long.length <= MAX_MARKDOWN_CHARS);
+  const started = Date.now();
+  const blocks = parseMarkdown(long);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(blocks[1].items.length, 180);
+});
+
+test("the answer view no longer special-cases any agent and keeps every safety property of the renderer", async () => {
+  const { readFileSync } = await import("node:fs");
+  const view = readFileSync(new URL("../src/components/mc/AgentAnswerView.tsx", import.meta.url), "utf8");
+  const code = view.replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(!/dangerouslySetInnerHTML|innerHTML|\bhref=\{?["'`]?(?!#)/.test(code.replace(/AuthorizationDetail[^\n]*/g, "")));
+  assert.ok(code.includes("<MarkdownText text={chat ?? body} />"));
+  assert.ok(code.includes('<MarkdownText text={body} className="text-slate-200" />'));
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+  assert.ok(!deps.some((d) => /markdown|marked|remark|rehype|mdx|sanitize|dompurify|showdown/i.test(d)), "no markdown dependency may be added");
 });

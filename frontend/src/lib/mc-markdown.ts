@@ -2,12 +2,12 @@
  * A small, SAFE markdown reader for the Mission Control chat. It turns an agent's reply into plain data (blocks and inline pieces);
  * components/mc/MarkdownText.tsx turns that data into React elements. Nothing here builds HTML.
  *
- * WHAT IT UNDERSTANDS (exactly what the CTO's communication protocol asks for, and nothing more):
+ * WHAT IT UNDERSTANDS (exactly what every executive's communication protocol asks for, and nothing more):
  *   ### Heading        (also # and ##; always shown as a small section heading)
  *   1. numbered steps  (also "1)"), - or * bullets, an indented line continues the item above it
  *   **bold**           and   `code`   inside any line,   and   ```fenced code```   blocks
  * EVERYTHING ELSE IS PLAIN TEXT, shown exactly as written: no links, no images, no HTML, no tables, no italics. A reply with no markdown
- * comes out as ordinary paragraphs, so the other executives' plain replies look as they always did.
+ * comes out as ordinary paragraphs, so an older plain reply looks as it always did.
  *
  * WHY THIS IS SAFE. The output is data: text is only ever a string that React then escapes. A "<script>" or an "[x](javascript:...)" in a
  * reply stays visible text, because this reader never produces a tag or a link. An unclosed ** or ` stays literal. Inside a code

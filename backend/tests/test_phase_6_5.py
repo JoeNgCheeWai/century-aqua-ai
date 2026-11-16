@@ -154,9 +154,13 @@ class VettingTests(unittest.TestCase):
 
 class PromptTests(unittest.TestCase):
     def test_the_chat_reply_block_is_in_all_four_agents_and_the_summary_block_only_in_cto_and_cmo(self):
-        for module in (cao_agent, coo_agent, cmo_agent):
-            self.assertIn(chat_style.CHAT_REPLY_PROMPT.strip(), module.BASE_SYSTEM_PROMPT, module.__name__)
-        # The CTO has its own version of the block (structured, friendly), see CTO_CHAT_REPLY_PROMPT; it must have exactly one chat block.
+        # Every executive has its OWN structured version of the block (communication parity), each with exactly one chat block; none carries the
+        # shared plain one, whose 2-4 sentence, no-markdown rule would contradict the protocol.
+        for name, module in (("cao", cao_agent), ("coo", coo_agent), ("cmo", cmo_agent)):
+            self.assertIn(chat_style.CHAT_REPLY_PROMPTS[name].strip(), module.BASE_SYSTEM_PROMPT, name)
+            self.assertNotIn(chat_style.CHAT_REPLY_PROMPT.strip(), module.BASE_SYSTEM_PROMPT, name)
+            self.assertEqual(module.BASE_SYSTEM_PROMPT.count("CONVERSATIONAL REPLY (MANDATORY"), 1, name)
+        # The CTO's own version (structured, friendly), see CTO_CHAT_REPLY_PROMPT; it must have exactly one chat block.
         self.assertIn(chat_style.CTO_CHAT_REPLY_PROMPT.strip(), cto_agent.BASE_SYSTEM_PROMPT)
         self.assertNotIn(chat_style.CHAT_REPLY_PROMPT.strip(), cto_agent.BASE_SYSTEM_PROMPT)
         self.assertEqual(cto_agent.BASE_SYSTEM_PROMPT.count("CONVERSATIONAL REPLY (MANDATORY"), 1)

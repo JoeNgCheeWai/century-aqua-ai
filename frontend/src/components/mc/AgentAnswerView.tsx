@@ -4,7 +4,7 @@ import MockupGallery from "@/components/mc/MockupGallery";
 import ScenarioGrid from "@/components/mc/ScenarioGrid";
 import { Badge, Card, List, SectionTitle } from "@/components/mc/ui";
 import { splitResponse } from "@/lib/mc-answer";
-import type { AgentAnswer } from "@/lib/mc-types";
+import { AGENT_KEYS, type AgentAnswer, type AgentKey } from "@/lib/mc-types";
 
 /**
  * An agent's answer, kept clean. What a reader sees by default, top to bottom:
@@ -15,9 +15,10 @@ import type { AgentAnswer } from "@/lib/mc-types";
  * recommendation (when a short reply is shown above), the reasoning chain, the scenarios, the sources the model cited, the
  * knowledge-base documents that were retrieved, and the audit facts (score, audit id, model).
  *
- * FORMATTING: the CTO writes its replies with ### headings, numbered steps and **bold** (its communication protocol), so ONLY the CTO's reply
- * text is drawn through the safe reader in MarkdownText.tsx (no HTML, no links, escaped text). The other three executives are shown
- * exactly as before, as plain text.
+ * FORMATTING: all four executives write their replies with ### headings, numbered steps and **bold** (each has its own communication protocol),
+ * so EVERY agent's reply text is drawn through the safe reader in MarkdownText.tsx (no HTML, no links, escaped text, no dependency). A reply
+ * with no markdown comes out as ordinary paragraphs, so an older stored plain reply looks as it always did. The reader is the only place a
+ * reply is formatted; nothing here builds HTML.
  *
  * The backend appends two notes to the reply text itself (the documents list and a plain-text copy of the authorization
  * request). They are separated out by lib/mc-answer.ts so the default view is not cluttered by them. Nothing is deleted: the
@@ -31,7 +32,9 @@ export default function AgentAnswerView({ answer, agent }: { answer: AgentAnswer
   const chat = answer.chat_reply?.trim() || null;
   const reasoning = answer.reasoning_chain ?? [];
   const sources = answer.sources ?? [];
-  const formatted = agent === "cto";
+  // Every executive writes the same structured, markdown-light reply now (communication parity). The reader is safe for any text: it only ever
+  // produces data that React escapes, and plain text with no markdown renders as ordinary paragraphs.
+  const formatted = AGENT_KEYS.includes(agent as AgentKey);
   const hasInternals = reasoning.length > 0 || !!answer.scenarios || sources.length > 0 || documents.length > 0 || !!chat;
 
   return (
