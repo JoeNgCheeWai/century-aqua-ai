@@ -6,8 +6,10 @@ The CAO's, COO's and CMO's READ-ONLY tools (executive capability parity with the
   CMO: read_brand_file (brand docs, past copy, public assets), diagnose_asset_request   (plus its existing generate_image)
 
 THE RULES, ALL IN CODE:
-  * READ-ONLY, with ONE exception: the COO's manage_fetch_queue (knowledge_queue.py) writes the fetch queue and the knowledge base. It is COO-only,
-    switched off by default (KNOWLEDGE_INGEST), bounded and logged. Nothing here writes to a repository. The CAO and COO have no GitHub tool at all.
+  * READ-ONLY, with TWO exceptions. (1) The COO's manage_fetch_queue (knowledge_queue.py) writes the fetch queue and the knowledge base. It is COO-only,
+    switched off by default (KNOWLEDGE_INGEST), bounded and logged. (2) EVERY executive's save_memory (memory_tools.py) writes one lesson to the shared
+    episodic memory (the ExecutiveMemory table and its own Pinecone namespace), under the caller's own role, bounded and logged; search_memory reads it.
+    Nothing here writes to a repository. The CAO and COO have no GitHub tool at all.
   * SCOPED ON THE SERVER. The role is passed by code, never taken from a tool argument. A record kind or file outside the role's scope is refused.
   * NO SECRETS, NO OTHER ROLE'S PRIVATE DATA. Secret files are refused by name and secret-looking text is masked. The COO's audit read returns
     decision metadata only (never a question or an answer's text). The CMO reads brand and public files only, not Mission Control or staff code.
@@ -25,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.agents import execution_plan as plan_rules
-from app.agents import knowledge_queue
+from app.agents import knowledge_queue, memory_tools
 from app.governance import admin_store, db, farm_records, operations_log
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,9 @@ class ExecOutcome:
     fetched: dict[int, dict[str, Any]] = field(default_factory=dict)
     completed: set[int] = field(default_factory=set)
     ingested_urls: list[str] = field(default_factory=list)
+    # The executives' episodic memory (memory_tools.py): how many saves and searches this answer made, so code can bound them.
+    memory_saves: int = 0
+    memory_searches: int = 0
     inventory_rows: int = 0
     cost_rows: int = 0
     farm_rows: int = 0
@@ -129,6 +134,8 @@ SPECS: dict[str, list[dict[str, Any]]] = {
               "Use it immediately when asked why; never offer to investigate.", _audit_id_prop()),
     ],
 }
+for _role in SPECS:  # every executive gets the shared episodic memory (save_memory, search_memory): one record, found by meaning, kept for later chats
+    SPECS[_role].extend(memory_tools.SPECS)
 READ_TOOLS = {"read_farm_records", "read_knowledge_base", "read_audit_log", "read_operations_summary", "read_brand_file"}
 QUEUE_TOOL = knowledge_queue.TOOL_NAME  # manage_fetch_queue: handled by knowledge_queue.handle, not by run_read
 DIAGNOSTIC_TOOLS = {"diagnose_recommendation": "cao", "diagnose_operational_routing": "coo", "diagnose_asset_request": "cmo"}
@@ -278,6 +285,9 @@ async def handle_block(role: str, block: Any, outcome: ExecOutcome) -> dict[str,
             report = await exec_diagnostics.diagnose(role, audit_id)
             outcome.diagnostic = report
             return _result(block, exec_diagnostics.render_report(report), not report.get("ok"))
+        if name in memory_tools.TOOL_NAMES and name in tool_names(role):
+            text, ok, target, rows = await memory_tools.handle(role, name, args, outcome)  # logged by memory_tools; NOT a "read": it must not use the read budget
+            return _result(block, text, not ok)
         if name == QUEUE_TOOL and name in tool_names(role):
             text, ok, target, rows = await knowledge_queue.handle(role, args, outcome)
             entry = {"tool": name, "target": target, "ok": ok, "rows": rows}

@@ -97,13 +97,16 @@ def _to_metadata(chunk: Mapping[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-async def upsert_chunks(chunks: list[dict[str, Any]]) -> int:
+async def upsert_chunks(chunks: list[dict[str, Any]], namespace: str = "") -> int:
     """
     Upsert embedded chunks into Pinecone.
 
     Each chunk must contain ``chunk_id`` and ``embedding`` (list of floats);
     every other field is stored as metadata (including ``text``). The vector id
     is the ``chunk_id``, so re-upserting the same chunk overwrites it.
+
+    ``namespace`` (default: the index's default namespace, where the document library lives) keeps a separate kind of record, such as the
+    executives' memory, out of the library's searches. It is only passed to Pinecone when set, so the default call is exactly as before.
 
     Returns:
         The number of vectors upserted.
@@ -127,10 +130,11 @@ async def upsert_chunks(chunks: list[dict[str, Any]]) -> int:
         )
 
     index = await asyncio.to_thread(init_pinecone)
+    extra: dict[str, Any] = {"namespace": namespace} if namespace else {}
     try:
         for start in range(0, len(vectors), UPSERT_BATCH_SIZE):
             batch = vectors[start : start + UPSERT_BATCH_SIZE]
-            await asyncio.to_thread(index.upsert, vectors=batch)
+            await asyncio.to_thread(index.upsert, vectors=batch, **extra)
     except Exception as exc:
         raise VectorDBError(f"Pinecone upsert failed: {type(exc).__name__}") from exc
     return len(vectors)
@@ -142,9 +146,14 @@ def _field(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
-async def query_vectors(embedding: list[float], top_k: int = 5) -> list[dict[str, Any]]:
+async def query_vectors(
+    embedding: list[float], top_k: int = 5, *, namespace: str = "", metadata_filter: Mapping[str, Any] | None = None
+) -> list[dict[str, Any]]:
     """
     Find the ``top_k`` most similar chunks.
+
+    ``namespace`` and ``metadata_filter`` (a Pinecone filter such as ``{"type": {"$eq": "executive_memory"}}``) are optional and only passed to
+    Pinecone when given, so a plain call searches the default namespace with no filter, exactly as before.
 
     Returns:
         A list of ``{"id": str, "score": float, "metadata": dict}``, best first.
@@ -157,9 +166,14 @@ async def query_vectors(embedding: list[float], top_k: int = 5) -> list[dict[str
     top_k = max(1, int(top_k))
 
     index = await asyncio.to_thread(init_pinecone)
+    extra: dict[str, Any] = {}
+    if namespace:
+        extra["namespace"] = namespace
+    if metadata_filter:
+        extra["filter"] = dict(metadata_filter)
     try:
         response = await asyncio.to_thread(
-            index.query, vector=list(embedding), top_k=top_k, include_metadata=True
+            index.query, vector=list(embedding), top_k=top_k, include_metadata=True, **extra
         )
     except Exception as exc:
         raise VectorDBError(f"Pinecone query failed: {type(exc).__name__}") from exc

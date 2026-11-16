@@ -24,10 +24,11 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from anthropic import AsyncAnthropic
 
-from app.agents import diagnostics, language_guard, operational_approval, plan_checks, tools
+from app.agents import diagnostics, language_guard, memory_tools, operational_approval, plan_checks, tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -39,7 +40,7 @@ from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CTO_CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
-from app.prompts.exec_tools_prompt import KNOWLEDGE_INTAKE_SHORT_PROMPT
+from app.prompts.exec_tools_prompt import KNOWLEDGE_INTAKE_SHORT_PROMPT, MEMORY_PROMPT
 from app.prompts.persona import CTO_ENGINEER_PROMPT, persona_block, thinking_process
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ AGENT_ID = "cto"
 CTO_ROLE_PROMPT = (
     persona_block("cto") + "\n\n" + CTO_ENGINEER_PROMPT + "\n\n" + thinking_process("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CTO_CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
     + "\n\n" + CTO_EXECUTION_PLAN_PROMPT + "\n\n" + KNOWLEDGE_INTAKE_SHORT_PROMPT  # the CTO may ask the COO for a source; it cannot reach the queue itself
+    + "\n\n" + MEMORY_PROMPT  # the shared episodic memory (save_memory, search_memory)
 )
 
 # The constitution comes FIRST, then the CTO's own role prompt (Executive Constitution, Clause 0).
@@ -171,8 +173,11 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
     the event loop. Only the branch ``main`` is read, whatever the model asks for: a change is made from main, so main is what must have
     been read. A file that was cut off (too long) is NOT counted as read: it cannot be rewritten whole.
     """
-    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system, "tools": [tools.READ_TOOL_SPEC, diagnostics.TOOL_SPEC]}
+    # The two read-only tools above, plus the executives' shared episodic memory (memory_tools.py: save_memory, search_memory), the same module and
+    # limits the other three executives use through exec_tools. The memory counters are per answer, like the file-read count.
+    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system, "tools": [tools.READ_TOOL_SPEC, diagnostics.TOOL_SPEC, *memory_tools.SPECS]}
     log_tools_available(common["tools"])
+    memory_counts = SimpleNamespace(memory_saves=0, memory_searches=0)
     convo = list(messages)
     outcome = ToolOutcome()
     read = outcome.read
@@ -199,9 +204,12 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
                                                     args.get("run_probe") is not False)
                 outcome.diagnostic = report
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": not report.get("ok"), "content": diagnostics.render_report(report)})
+            elif getattr(block, "name", None) in memory_tools.TOOL_NAMES:
+                text, ok, _, _ = await memory_tools.handle(AGENT_ID, block.name, args, memory_counts)
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": not ok, "content": text})
             elif getattr(block, "name", None) != tools.READ_TOOL_NAME:
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
-                                "content": "Unknown tool. Only github_read_file and diagnose_boardroom_session exist."})
+                                "content": "Unknown tool. Only github_read_file, diagnose_boardroom_session, save_memory and search_memory exist."})
             elif made >= MAX_FILE_READS:
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                 "content": f"File-read limit reached ({MAX_FILE_READS} per answer). Work with the files you have already read."})
