@@ -122,6 +122,50 @@ class TheOldNoToolsWordingWasCorrectedNotLeftContradictingTests(unittest.TestCas
         self.assertLess(len(SYSTEM) // 4, 16500)
 
 
+class TheConcisenessRuleIsThereTests(unittest.TestCase):
+    """Long feature designs ran past the serverless time limit, so the CTO must open with a short outline (CRITICAL RESPONSE RULE)."""
+
+    RULE = "CRITICAL RESPONSE RULE: When asked to design, plan, or build a feature, you MUST provide a high-level, concise summary first (under 200 words)."
+
+    def test_the_rule_is_at_the_top_of_the_ctos_own_prompt_with_its_exact_wording(self):
+        self.assertTrue(cto_prompt.CTO_SYSTEM_PROMPT.startswith(self.RULE))
+        for needle in ("Do NOT output full code blocks, exhaustive file structures, or complete implementations",
+                       "'show me the code' or 'generate the files'",
+                       "only outline the approach, required files, and next steps",
+                       "This prevents API timeout errors."):
+            self.assertIn(needle, cto_prompt.CTO_SYSTEM_PROMPT, needle)
+
+    def test_it_is_in_the_prompt_the_cto_really_sends_exactly_once_and_after_the_constitution(self):
+        self.assertEqual(SYSTEM.count(self.RULE), 1)
+        self.assertGreater(SYSTEM.index(self.RULE), SYSTEM.index("END OF EXECUTIVE CONSTITUTION"))
+
+    def test_the_other_executives_prompts_are_not_changed_by_it(self):
+        self.assertNotIn(self.RULE, cmo_agent.BASE_SYSTEM_PROMPT)
+
+    def test_the_old_open_ended_length_line_is_gone_and_the_concise_default_replaces_it(self):
+        self.assertNotIn("as long as the task requires", cto_prompt.CTO_SYSTEM_PROMPT)
+        self.assertNotIn("as long as the task requires", SYSTEM)
+        line = ('- Length: Concise and high-level by default. Only provide exhaustive code or file structures when the user explicitly requests '
+                '"show me the code" or "generate the files".')
+        self.assertEqual(cto_prompt.CTO_SYSTEM_PROMPT.count(line), 1)
+        self.assertEqual(SYSTEM.count(line), 1)
+
+    def test_the_json_length_budget_agrees_with_the_rule_instead_of_inviting_long_answers(self):
+        budget = cto_prompt.CTO_REASONING_PROMPT.split("LENGTH BUDGET")[1].split('1. "response"')[0]
+        for needle in ("under 200 words (the CRITICAL RESPONSE RULE above)", "with no code blocks",
+                       "Each reasoning_chain entry: one or two sentences, never more than three",
+                       "keep the whole chain to about 120 words",
+                       '"description" at most 2 sentences; "resource_requirements" at most 2 sentences; at most 3 items in each of "key_assumptions" and "risks"'):
+            self.assertIn(needle, budget, needle)
+        self.assertNotIn("at most 3 sentences", budget)  # the looser scenario limits are gone
+
+    def test_the_json_shape_is_unchanged_so_the_parser_and_the_shared_fields_still_agree(self):
+        for needle in ('"reasoning_chain": ["Step 1: ...", "Step 2: ...", "Step 3: ...", "Data and sources: ...", "Assumptions: ...", "Limitations: ..."]',
+                       '"optimistic":', '"baseline":', '"pessimistic":', '"pre_consultation_requests"', '"authorization_request": null'):
+            self.assertIn(needle, cto_prompt.CTO_REASONING_PROMPT, needle)
+        self.assertIn("COMPLETE: an object that is cut off loses the reasoning chain", cto_prompt.CTO_REASONING_PROMPT)
+
+
 class TheCtoStillAnswersInTheSharedFormatTests(unittest.TestCase):
     def test_a_conversational_answer_with_pushback_parses_and_keeps_its_plan(self):
         from app.agents import cao_reasoning, cto_authorization

@@ -372,9 +372,10 @@ class CtoZeroFrictionPromptTests(unittest.TestCase):
                        '"a developer"', '"an engineer"', '"your IT team"', 'never write "I recommend a technical person does this"'):
             self.assertIn(needle, self.ZERO, needle)
 
-    def test_it_is_told_to_give_the_copy_pasteable_solution_in_the_first_reply(self):
-        for needle in ("Give the COPY-PASTEABLE solution in the first reply", "`backticks` or a code block", "what the CEO should see when it worked"):
-            self.assertIn(needle, self.ZERO, needle)
+    def test_it_gives_a_high_level_summary_first_and_copy_pasteable_solutions_only_when_asked(self):
+        # Changed from "give the copy-pasteable solution in the first reply": that, with the execution-plan rules, made long answers that timed out.
+        self.assertIn("Provide a high-level summary in the first reply. Only provide copy-pasteable solutions when explicitly requested.", self.ZERO)
+        self.assertNotIn("Give the COPY-PASTEABLE solution in the first reply", self.ZERO)
 
     def test_a_read_only_query_and_a_standard_prisma_migration_are_routine_not_alarming(self):
         for needle in ("A READ-ONLY QUERY (a SELECT, a count) changes nothing: give it straight away, with no production warning and no approval",
