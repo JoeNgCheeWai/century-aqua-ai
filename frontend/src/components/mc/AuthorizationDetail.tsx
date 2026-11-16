@@ -62,6 +62,13 @@ export default function AuthorizationDetail({
         <p className="text-xs text-slate-500">No plain-language summary was written for this request. Read the impact and the technical details.</p>
       )}
 
+      {request.ceo_only && (
+        <div className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3">
+          <SectionTitle>Only you can decide this</SectionTitle>
+          <List items={request.ceo_only_reasons ?? []} />
+        </div>
+      )}
+
       <div>
         <SectionTitle>Impact</SectionTitle>
         <p className="text-sm text-slate-300">{request.impact}</p>

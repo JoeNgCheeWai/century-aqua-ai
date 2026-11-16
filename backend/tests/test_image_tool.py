@@ -402,7 +402,10 @@ class CmoEndToEndTests(GuardedTestCase):
     def ask(self, replies, **kwargs):
         client = ScriptedClient(replies)
         env = {k: v for k, v in os.environ.items() if k not in ("GOVERNANCE_DATABASE_URL", "DATABASE_URL", "PINECONE_API_KEY", "PINECONE_INDEX")}
-        with mock.patch.object(cmo_agent, "_client", client), mock.patch.dict(os.environ, env, clear=True):
+        from app.agents import exec_checks
+
+        no_check = mock.patch.dict(exec_checks.CHECKS, {"cmo": lambda request, outcome: exec_checks.Check(True, ["(self-check off: tested in test_executive_capability)"], [], [])})
+        with mock.patch.object(cmo_agent, "_client", client), mock.patch.dict(os.environ, env, clear=True), no_check:
             return run(cmo_agent.get_cmo_result("Show me a hero mockup", use_rag=False, audit=False, **kwargs)), client
 
     def test_the_whole_path_prompt_to_tool_to_blob_to_the_stored_request(self):

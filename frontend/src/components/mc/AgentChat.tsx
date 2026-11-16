@@ -210,8 +210,8 @@ export default function AgentChat({ agent }: { agent: AgentKey }) {
           <Card>
             <p className="text-sm text-slate-300">
               Ask {info.name} ({info.role}) a question.
-              {agent === "cto" || agent === "cmo"
-                ? " A request to change something returns an authorization request that waits for a human."
+              {agent === "cto" || agent === "cmo" || agent === "cao" || agent === "coo"
+                ? " A concrete proposal returns an authorization request that waits for a human."
                 : " Every answer is recorded in the audit log."}{" "}
               You get a short answer first; use “Show internal reasoning &amp; sources” for the full reasoning.
             </p>

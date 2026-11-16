@@ -169,7 +169,9 @@ class PromptTests(unittest.TestCase):
         for module in (cto_agent, cmo_agent):
             self.assertIn(chat_style.AUTHORIZATION_SUMMARY_PROMPT.strip(), module.BASE_SYSTEM_PROMPT, module.__name__)
         for module in (cao_agent, coo_agent):
-            self.assertNotIn("executive_summary", module.BASE_SYSTEM_PROMPT, module.__name__)
+            # They do not carry the CTO/CMO summary block (its no-code-names rules). Since executive capability parity they may write a plain summary
+            # inside a RECOMMENDATION (exec_tools_prompt), which is a different, smaller instruction.
+            self.assertNotIn(chat_style.AUTHORIZATION_SUMMARY_PROMPT.strip(), module.BASE_SYSTEM_PROMPT, module.__name__)
 
     def test_the_chat_reply_block_asks_for_two_to_four_plain_sentences_and_forbids_claiming_action(self):
         text = chat_style.CHAT_REPLY_PROMPT

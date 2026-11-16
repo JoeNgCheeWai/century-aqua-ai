@@ -169,6 +169,6 @@ async def _default_reviewer() -> Reviewer:
     from app.agents import coo_agent
 
     async def ask(prompt: str) -> str:
-        return (await coo_agent.get_coo_result(prompt, None, use_rag=False, audit=False, user_id="coo-operational-review", memory=False)).reply
+        return (await coo_agent.get_coo_result(prompt, None, use_rag=False, audit=False, user_id="coo-operational-review", memory=False, tools=False)).reply
 
     return ask
