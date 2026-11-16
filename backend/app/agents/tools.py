@@ -68,13 +68,42 @@ def _fail(tool: str, message: str) -> ToolResult:
     return ToolResult(False, tool, message)
 
 
+TOKEN_ENV = "GITHUB_PAT"
+_warned_alias = False
+
+
+def token_name() -> str | None:
+    """
+    The NAME of the environment variable the GitHub token is set under (never its value), or None.
+
+    The documented name is GITHUB_PAT. Environment variable names are case-sensitive on Linux (Render), so a token entered as ``GitHub_Pat``
+    used to be invisible: the CTO's file reader answered "not set" with a perfectly good token on the server. A different CASING of the same
+    name is now accepted. GITHUB_PAT wins when it is present at all, even if empty, so an explicit empty value still means "not configured".
+    """
+    global _warned_alias
+    if TOKEN_ENV in os.environ:
+        return TOKEN_ENV if os.environ[TOKEN_ENV].strip() else None
+    for name, value in os.environ.items():
+        if name.upper() == TOKEN_ENV and value.strip():
+            if not _warned_alias:
+                _warned_alias = True
+                logger.warning("tools: the GitHub token is set as '%s'; the documented name is %s. Accepted, but rename it to match render.yaml.", name, TOKEN_ENV)
+            return name
+    return None
+
+
+def _token() -> str:
+    name = token_name()
+    return os.environ.get(name, "").strip() if name else ""
+
+
 def configured() -> bool:
-    return bool(os.getenv("GITHUB_PAT", "").strip())
+    return token_name() is not None
 
 
 def _headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('GITHUB_PAT', '').strip()}",
+        "Authorization": f"Bearer {_token()}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": USER_AGENT,
