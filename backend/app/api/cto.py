@@ -26,6 +26,7 @@ app/agents/cto_agent.py).
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -37,6 +38,7 @@ from app.api.security import require_actor, require_cto_key
 from app.governance import audit
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Same request shape as the CAO and COO, under a CTO name for readability and for OpenAPI.
 CTORequest = CAORequest
@@ -124,7 +126,16 @@ async def cto(
             chat_reply=result.chat_reply,
             model=result.model,
         )
+    except HTTPException as exc:
+        # An HTTP error raised inside the chat (a refusal from a dependency). It used to be swallowed into a generic 502 with no reason;
+        # now the exact status and detail are logged and the same status goes back, so a 403 is never silent.
+        logger.error("CTO chat failed with %s: %s", exc.status_code, exc.detail)
+        print(f"ERROR IN AI_CTO: HTTP {exc.status_code}: {exc.detail}", flush=True)
+        raise
     except Exception as exc:
-        # Do not log message content: enterprise queries may be sensitive.
-        print(f"ERROR IN AI_CTO: {type(exc).__name__}: {exc}")
+        # Do not log message content: enterprise queries may be sensitive. The type, any HTTP status the model API gave (an Anthropic
+        # permission error carries 403) and the message are logged, so the reason is in Render's logs instead of only "502".
+        upstream = getattr(exc, "status_code", None)
+        logger.error("CTO chat failed (%s%s): %s", type(exc).__name__, f", upstream status {upstream}" if upstream else "", exc)
+        print(f"ERROR IN AI_CTO: {type(exc).__name__}{f' (upstream status {upstream})' if upstream else ''}: {exc}", flush=True)
         raise HTTPException(status_code=502, detail=f"AI_CTO unavailable: {type(exc).__name__}") from exc

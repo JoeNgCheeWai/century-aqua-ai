@@ -46,8 +46,11 @@ def require_internal_key(provided: str | None, key_env: str = KEY_ENV, header: s
     """
     expected = os.getenv(key_env, "")
     if not expected:
+        # Logged (names only, never a key or its length), because a refused call used to leave nothing in Render's logs.
+        print(f"KEY CHECK: {key_env} is not set on this server; answering 503", flush=True)
         raise HTTPException(status_code=503, detail=f"Endpoint disabled: {key_env} is not configured.")
     if not provided or not secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        print(f"KEY CHECK: {header} was {'missing' if not provided else 'present but did not match ' + key_env}; answering 401", flush=True)
         raise HTTPException(status_code=401, detail=f"Invalid or missing {header} header.")
 
 
