@@ -390,3 +390,22 @@ model IngestedSource {
 
   @@index([fetchRequestId])
 }
+
+// EXECUTIVE EPISODIC MEMORY: a lesson, operational rule or critical insight the executives chose to keep, found again by meaning in later chats.
+// The row is the record; the vector that finds it lives in Pinecone under vectorId (a hash of role + title + insight, so the same lesson is
+// stored once). role is CAO, CTO, COO, CMO or CEO, a plain string checked in code like the other agent fields above.
+model ExecutiveMemory {
+  id           String   @id @default(uuid())
+  // The id of this memory's vector in Pinecone. UNIQUE: it is what stops the same lesson being saved twice.
+  vectorId     String   @unique
+  role         String
+  // Short summary, e.g. "DO < 4.0 means no feed increase".
+  title        String
+  // The core rule or lesson learned.
+  insight      String
+  // Optional: why it was established.
+  context      String?
+  // Optional: the chat session it came from.
+  sourceChatId String?
+  createdAt    DateTime @default(now())
+}

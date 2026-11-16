@@ -155,11 +155,14 @@ class ToolDispatchTests(WithDb):
     """The role is code's: a tool argument can never change whose data is read."""
 
     def test_the_tool_sets_are_exactly_the_specified_ones_and_have_no_write_tool(self):
-        self.assertEqual(exec_tools.tool_names("cao"), ["read_farm_records", "read_knowledge_base", "diagnose_recommendation"])
-        # The COO's last tool is its knowledge queue (knowledge_queue.py). It is the ONE tool here that writes, and only to the queue and the knowledge base
-        # (never a repository); it is COO-only and switched off by default. tests/test_knowledge_queue.py pins that.
-        self.assertEqual(exec_tools.tool_names("coo"), ["read_farm_records", "read_audit_log", "read_operations_summary", "diagnose_operational_routing", "manage_fetch_queue"])
-        self.assertEqual(exec_tools.tool_names("cmo"), ["read_brand_file", "diagnose_asset_request"])
+        # Every role ends with the shared episodic memory (memory_tools.py): save_memory writes one lesson under the caller's own role to its own table and
+        # Pinecone namespace (never a repository), search_memory reads. tests/test_executive_memory.py pins that.
+        memory = ["save_memory", "search_memory"]
+        self.assertEqual(exec_tools.tool_names("cao"), ["read_farm_records", "read_knowledge_base", "diagnose_recommendation", *memory])
+        # The COO's knowledge queue (knowledge_queue.py) writes only to the queue and the knowledge base (never a repository); it is COO-only and
+        # switched off by default. tests/test_knowledge_queue.py pins that.
+        self.assertEqual(exec_tools.tool_names("coo"), ["read_farm_records", "read_audit_log", "read_operations_summary", "diagnose_operational_routing", "manage_fetch_queue", *memory])
+        self.assertEqual(exec_tools.tool_names("cmo"), ["read_brand_file", "diagnose_asset_request", *memory])
         for role in ("cao", "coo", "cmo"):
             for name in exec_tools.tool_names(role):
                 self.assertNotRegex(name, r"write|create|delete|update|merge|open_pr|approve|publish|send|run_")

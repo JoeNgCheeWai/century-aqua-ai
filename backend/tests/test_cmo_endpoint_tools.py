@@ -64,8 +64,9 @@ class CmoEndpointToolTests(GuardedTestCase):
         response, model, _ = self.post([_text_reply(_cmo_answer([]))])
         self.assertEqual(response.status_code, 200, response.text)
         tools = model.calls[0]["tools"]  # the keyword argument the Anthropic call actually received
-        # generate_image first and unchanged, then the two READ-ONLY tools added by executive capability parity (no write tool of any kind).
-        self.assertEqual([t["name"] for t in tools], ["generate_image", "read_brand_file", "diagnose_asset_request"])
+        # generate_image first and unchanged, then the two READ-ONLY tools added by executive capability parity, then the shared episodic memory
+        # (save_memory writes one lesson under the CMO's own role; see tests/test_executive_memory.py). No repository or publishing write tool.
+        self.assertEqual([t["name"] for t in tools], ["generate_image", "read_brand_file", "diagnose_asset_request", "save_memory", "search_memory"])
         self.assertEqual(tools[0]["input_schema"]["required"], ["prompt"])
         self.assertIn("generate_image", model.calls[0]["system"])  # and the system prompt says it exists
 
@@ -86,7 +87,7 @@ class CmoEndpointToolTests(GuardedTestCase):
     def test_the_first_line_of_the_response_logs_the_tools_available_without_any_secret(self):
         _, _, printed = self.post([_text_reply(_cmo_answer([]))])
         first = printed.splitlines()[0]
-        self.assertEqual(first, "CMO tools available: ['generate_image', 'read_brand_file', 'diagnose_asset_request'] (openai_key set: True, blob_token set: True)")
+        self.assertEqual(first, "CMO tools available: ['generate_image', 'read_brand_file', 'diagnose_asset_request', 'save_memory', 'search_memory'] (openai_key set: True, blob_token set: True)")
         self.assertNotIn(FAKE_KEY, printed)
         self.assertNotIn(FAKE_BLOB_TOKEN, printed)
 
@@ -94,7 +95,7 @@ class CmoEndpointToolTests(GuardedTestCase):
         env = {k: v for k, v in os.environ.items() if k != "BLOB_READ_WRITE_TOKEN"}
         with mock.patch.dict(os.environ, env, clear=True):
             _, _, printed = self.post([_text_reply(_cmo_answer([]))])
-        self.assertIn("'diagnose_asset_request'] (openai_key set: True, blob_token set: False)", printed.splitlines()[0])
+        self.assertIn("'search_memory'] (openai_key set: True, blob_token set: False)", printed.splitlines()[0])
         self.assertEqual(image_tool.readiness(), {"openai_key": True, "blob_token": True})  # restored after the block
 
     def test_the_endpoint_still_refuses_a_wrong_key_before_any_model_call(self):
