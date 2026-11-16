@@ -70,11 +70,30 @@ class CtoPromptTests(unittest.TestCase):
     def test_the_cto_is_no_longer_told_to_ask_for_a_file_and_leave_the_plan_null(self):
         self.assertNotIn('ask for the file text and leave "execution_plan" null', chat_style.CTO_EXECUTION_PLAN_PROMPT)
 
+    def test_the_execution_plan_is_conditional_on_the_user_asking_for_the_code_not_the_default(self):
+        # Concise-by-default (see test_cto_persona.TheConcisenessRuleIsThereTests): a plan with full file content only when the user asks for it.
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        self.assertIn("ONLY output an \"execution_plan\" with full file content IF the user explicitly requests 'show me the code' or 'generate the files'", text)
+        self.assertIn("Otherwise, provide a high-level summary of the approach and required files.", text)
+        self.assertNotIn("you MUST also put an \"execution_plan\"", text)  # the old unconditional wording
+        self.assertNotIn("When proposing code changes, you MUST output", text)  # in all three places it appeared
+        self.assertIn("When the user has requested the code, you MUST output a valid JSON object named execution_plan", chat_style.CTO_EXECUTION_TEMPLATE)
+        self.assertIn("RULE 1, FORCE THE JSON EXECUTION PLAN: When the user has requested the code (see above), you MUST output", text)
+        self.assertIn("they apply only once the user has requested the code", text)
+        self.assertIn(text.strip(), cto_agent.BASE_SYSTEM_PROMPT)
+
+    def test_when_the_code_is_requested_every_safety_rule_and_the_plan_shape_still_apply(self):
+        text = chat_style.CTO_EXECUTION_PLAN_PROMPT
+        for needle in ("OVERWRITES the whole file", "only update a file whose current full text you were shown", "never include a secret",
+                       "never overwrite an existing file you were not shown", "At most 8 files, each under 40 KB", "Approving does NOT deploy anything",
+                       "exactly these keys", "files_to_update", "COMPLETE NEW CONTENT"):
+            self.assertIn(needle, text, needle)
+
     def test_the_cto_gets_the_critical_execution_rule_and_the_template_inside_its_prompt(self):
         text = chat_style.CTO_EXECUTION_TEMPLATE
         for needle in (
             "CRITICAL EXECUTION RULE",
-            "MUST output a valid JSON object named execution_plan inside your authorization_request",
+            "When the user has requested the code, you MUST output a valid JSON object named execution_plan inside your authorization_request",
             "Do not just describe the plan in text",
             "You must fill out this exact schema",
             "You MUST provide the full file content in the content string",
