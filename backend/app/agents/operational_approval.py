@@ -107,6 +107,10 @@ async def _route(audit_id: int, agent_id: str, request: dict[str, Any] | None, o
     from app.agents import plan_checks
     from app.api import authorization
 
+    from app.agents import exec_approval
+
+    if enabled() and db.is_configured() and exec_approval.is_recommendation(request):
+        return await exec_approval.route(audit_id, agent_id, request, reviewer)  # a CAO/COO recommendation: no plan, no pull request
     if not enabled() or agent_id not in ORIGINATORS or not isinstance(request, dict) or not db.is_configured():
         return None
     plan = request.get("execution_plan")

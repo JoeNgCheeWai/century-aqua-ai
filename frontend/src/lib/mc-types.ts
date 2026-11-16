@@ -51,6 +51,13 @@ export interface AuthorizationRequest {
   /** AI-generated mockups the CMO's generate_image tool stored in Vercel Blob (https://...blob.vercel-storage.com/...), or labelled placehold.co placeholders when an image could not be generated. */
   mockup_urls?: string[];
   execution_plan?: ExecutionPlan | null;
+  /** CAO and COO recommendations (no plan, no pull request): approving only records the decision and remembers the strategy. */
+  kind?: "recommendation";
+  /** Set by code: animals, chemicals, statutory reporting or money above the threshold. Always the CEO's decision. */
+  ceo_only?: boolean;
+  ceo_only_reasons?: string[];
+  /** What the agent read for this request (tool, target, ok, rows). Never the text that was read. */
+  reads?: { tool: string; target: string; ok: boolean; rows: number | null }[];
   /** Written by the backend after approval when there was a plan. Absent before. */
   execution?: ExecutionOutcome | null;
   status: string;

@@ -69,6 +69,28 @@ class CAOPreConsultation(BaseModel):
     cto_query: str | None = None  # technical feasibility question for the future CTO
 
 
+class RecommendationRequest(BaseModel):
+    """A CAO or COO recommendation waiting for a person (app/agents/exec_requests.py). Approving records the decision; it never executes anything."""
+
+    kind: Literal["recommendation"] = "recommendation"
+    proposed_by: Literal["cao", "coo"]
+    action_summary: str
+    executive_summary: dict[str, str] | None = None
+    risk_level: Literal["low", "medium", "high", "critical"]
+    impact: str
+    proposed_content: str | None = None
+    deployment_commands: list[str] = Field(default_factory=list)
+    rollback_plan: str | None = None
+    claims_to_verify: list[str] = Field(default_factory=list)
+    targets: list[str] = Field(default_factory=list)  # what the recommendation rests on, all of it read this answer
+    reads: list[dict] = Field(default_factory=list)  # the read log: tool, target, ok, rows (never the text that was read)
+    ceo_only: bool = False  # decided by code: animals, chemicals, statutory reporting or money at or above the threshold
+    ceo_only_reasons: list[str] = Field(default_factory=list)
+    status: Literal["pending_human_approval"] = "pending_human_approval"
+    requires_human_approval: Literal[True] = True
+    executed: Literal[False] = False
+
+
 class CAOResponse(BaseModel):
     response: str  # the final recommendation
     reply: str  # same text as `response`; kept so existing callers keep working
@@ -88,7 +110,13 @@ class CAOResponse(BaseModel):
     model: str | None = None
 
 
-@router.post("/api/cao", response_model=CAOResponse)
+class CAORecommendationResponse(CAOResponse):
+    """CAOResponse plus the recommendation awaiting approval (the CAO's and the COO's endpoints). CAOResponse itself is unchanged: the CMO and CTO extend it too."""
+
+    authorization_request: RecommendationRequest | None = None  # null unless the answer is a concrete recommendation to approve
+
+
+@router.post("/api/cao", response_model=CAORecommendationResponse)
 async def cao(
     request: CAORequest,
     x_internal_cao_key: str | None = Header(default=None),
@@ -110,7 +138,7 @@ async def cao(
             history_dicts, history_discarded = [], True
 
         result = await get_cao_result(request.message, history_dicts, user_id=user_id, model_tier=request.model)
-        return CAOResponse(
+        return CAORecommendationResponse(
             response=result.reply,
             reply=result.reply,
             reasoning_chain=result.reasoning_chain,
@@ -124,6 +152,7 @@ async def cao(
             sources=result.sources,
             chat_reply=result.chat_reply,
             model=result.model,
+            authorization_request=result.authorization_request,
         )
     except Exception as exc:
         # Do not log message content: enterprise queries may be sensitive.

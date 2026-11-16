@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
-from app.agents import image_tool, language_guard, operational_approval
+from app.agents import exec_checks, exec_tools, image_tool, language_guard, operational_approval, tools as github_tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import STRUCTURED_CHAT_REPLY_CHARS, load_json_object, parse_cao_output
@@ -42,6 +42,7 @@ from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CMO_CHAT_REPLY_PROMPT, CMO_UI_PROMPT
 from app.prompts.cmo_prompt import CMO_REASONING_PROMPT, CMO_SYSTEM_PROMPT
+from app.prompts.exec_tools_prompt import CMO_TOOLS_PROMPT
 from app.prompts.persona import expert_role, persona_block, thinking_process
 from app.prompts.role_protocols import role_protocol
 
@@ -54,7 +55,7 @@ AGENT_ID = "cmo"
 # authorization workflow, the generate_image tool text and the JSON format below are unchanged.
 CMO_ROLE_PROMPT = (
     persona_block("cmo") + "\n\n" + expert_role("cmo") + "\n\n" + role_protocol("cmo") + "\n\n" + thinking_process("cmo") + "\n\n" + CMO_SYSTEM_PROMPT + "\n\n" + CMO_REASONING_PROMPT + "\n\n" + CMO_CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
-    + "\n\n" + CMO_UI_PROMPT
+    + "\n\n" + CMO_UI_PROMPT + "\n\n" + CMO_TOOLS_PROMPT
 )
 
 # The constitution comes FIRST, then the CMO's own role prompt (Executive Constitution, Clause 0).
@@ -188,6 +189,34 @@ async def _create_with_image_tool(client, *, model: str, system: str, messages: 
     return response, produced
 
 
+async def _create_with_tools(client, *, model: str, system: str, messages: list[dict]):
+    """
+    ONE answer with ALL the CMO's tools: generate_image (as before, at most MAX_IMAGES_PER_ANSWER) and the new READ-ONLY file reader and
+    diagnostic (exec_tools). One bounded loop. Returns (the final response, the set of Blob addresses the image tool returned, an ExecOutcome).
+    """
+    produced: set[str] = set()
+    made = [0]
+
+    async def image_handler(block):
+        if getattr(block, "name", None) != image_tool.IMAGE_TOOL_NAME:
+            return None
+        args = getattr(block, "input", None)
+        prompt = args.get("prompt") if isinstance(args, dict) else None
+        if made[0] >= MAX_IMAGES_PER_ANSWER:
+            return {"type": "tool_result", "tool_use_id": block.id, "is_error": True,
+                    "content": f"Image limit reached ({MAX_IMAGES_PER_ANSWER} per answer). Carry on without another image."}
+        made[0] += 1
+        result = await asyncio.to_thread(image_tool.generate_image_detailed, prompt)
+        if result.generated:
+            produced.add(result.url)
+        return {"type": "tool_result", "tool_use_id": block.id, "content": image_tool.tool_result_text(result)}
+
+    response, outcome = await exec_tools.tool_loop(client, AGENT_ID, model=model, max_tokens=CMO_MAX_TOKENS, system=system, messages=messages,
+                                                   extra_tools=[image_tool.IMAGE_TOOL_SPEC], extra_handler=image_handler,
+                                                   log_suffix=" (openai_key set: {openai_key}, blob_token set: {blob_token})".format(**image_tool.readiness()))
+    return response, produced, outcome
+
+
 @dataclass
 class CMOResult:
     """The CMO's answer plus the governance facts about it. The CAO's fields plus authorization_request."""
@@ -272,8 +301,9 @@ async def get_cmo_result(
     # Phase 6.5: no tier asked for means the agent's own model, exactly as before.
     model_id = resolve_model(model_tier, CMO_MODEL)
     produced_images: set[str] = set()
-    if images:
-        response, produced_images = await _create_with_image_tool(_get_client(), model=model_id, system=system, messages=messages)
+    outcome = exec_tools.ExecOutcome(AGENT_ID)
+    if images:  # the CMO's tools: generate_image plus the read-only brand-file reader and diagnostic (exec_tools)
+        response, produced_images, outcome = await _create_with_tools(_get_client(), model=model_id, system=system, messages=messages)
     else:  # a review of another executive's recommendation: no tools, exactly as before
         log_tools_available([])
         response = await _get_client().messages.create(
@@ -290,11 +320,20 @@ async def get_cmo_result(
     # The authorization_request is read from the same JSON object, but only when the object parsed as a
     # whole. A truncated or invalid object yields no request (never a half-built one).
     authorization_request = None
+    declaration, dropped = "", []
     data = load_json_object(raw) if parsed.structured else None
     if data is not None:
         # Only the Blob addresses the image tool returned during THIS answer survive in mockup_urls (see cmo_authorization).
         authorization_request, auth_findings = normalize_authorization_request(data.get("authorization_request"), produced_images)
         format_findings.extend(auth_findings)
+        if images and authorization_request is not None:
+            # THE READ-BEFORE-WRITE RULE (it is why the CMO could only be approved for brand-new files): an EXISTING file in the plan must have
+            # been read in full this answer. A new file needs no read. Unknown existence fails closed. Then the self-check (brand rules read, no
+            # unverifiable performance claim). Either one failing drops what it covers, with a finding and a code-written note first.
+            authorization_request, rbw = exec_checks.enforce_read_before_write(AGENT_ID, authorization_request, outcome, github_tools.github_file_status)
+            authorization_request, checked, declaration = exec_checks.self_check(AGENT_ID, authorization_request, outcome)
+            format_findings.extend([*rbw, *checked])
+            dropped = [f for f in (*rbw, *checked) if "dropped" in f]  # the reads themselves are logged to AdminAuditLog (exec_tools)
     if format_findings:
         logger.warning("CMO output format: %s", "; ".join(format_findings))
 
@@ -316,8 +355,14 @@ async def get_cmo_result(
     if guard_findings:
         logger.warning("CMO language guard: %s", "; ".join(guard_findings))
     text = guarded_text.text
+    if dropped:  # a rule dropped the request or its plan: the truth goes FIRST, before any model words that may say it is ready
+        text = exec_checks.failed_note(AGENT_ID, dropped) + "\n\n" + text
+    if outcome.diagnostic is not None:  # the diagnostic really ran: code puts what it found at the TOP of the first reply
+        text = exec_checks.diagnostic_block(outcome.diagnostic) + "\n\n" + text
     if authorization_request is not None:
         text += "\n\n" + audit_summary(authorization_request)
+        if declaration:
+            text += "\n\n" + declaration
     if response.stop_reason == "max_tokens":
         text += "\n\n[Response reached the length limit. Ask me to continue for the remainder.]"
         if not parsed.structured:
@@ -351,12 +396,20 @@ async def get_cmo_result(
             # AgentAuditLog.authorizationRequest. None when nothing would be published.
             authorization_request=authorization_request,
         )
-    # COO-LED APPROVAL (ships OFF: COO_AUTO_APPROVAL), same rule as the CTO's. The CMO has no file reader, so a plan that touches an EXISTING file
-    # is never approved here (it was not read first): only a small plan of brand-new files can be. Anything else waits for the CEO. Never raises.
+    # COO-LED APPROVAL (ships OFF: COO_AUTO_APPROVAL), same rule as the CTO's. The CMO now has a file reader (read_brand_file), so a plan that
+    # touches an EXISTING file can be routed when that file was read in full this answer (``originals``). It was previously approvable only for
+    # brand-new files. Anything else waits for the CEO. Never raises.
     chat_text = guarded_chat.text
+    if chat_text and chat_text.strip():  # the same code-written notes go on the short reply, so the CEO reads them first there too
+        if dropped:
+            chat_text = exec_checks.failed_note(AGENT_ID, dropped) + "\n\n" + chat_text.lstrip()
+        if outcome.diagnostic is not None:
+            chat_text = exec_checks.diagnostic_block(outcome.diagnostic) + "\n\n" + chat_text.lstrip()
+        if declaration:
+            chat_text = chat_text.rstrip() + "\n\n" + declaration
     note = ""
     if audit_id is not None and authorization_request is not None:
-        routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request)
+        routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request, originals=outcome.texts)
         note = operational_approval.approval_note(routed)
     if authorization_request is not None and not note:
         # Not routed to the COO (the switch is off, or it was not eligible): the CEO still reads the same collaborative line, written by code.

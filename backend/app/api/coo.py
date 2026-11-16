@@ -23,7 +23,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException
 
 from app.agents.coo_agent import AGENT_ID, get_coo_result
-from app.api.cao import CAORequest, CAOResponse
+from app.api.cao import CAORecommendationResponse, CAORequest
 from app.api.security import require_actor, require_coo_key
 from app.governance import audit
 
@@ -31,7 +31,7 @@ router = APIRouter()
 
 # Same request and response shapes as the CAO, under COO names for readability and for OpenAPI.
 COORequest = CAORequest
-COOResponse = CAOResponse
+COOResponse = CAORecommendationResponse
 
 
 @router.post("/api/coo", response_model=COOResponse)
@@ -70,6 +70,7 @@ async def coo(
             sources=result.sources,
             chat_reply=result.chat_reply,
             model=result.model,
+            authorization_request=result.authorization_request,
         )
     except Exception as exc:
         # Do not log message content: enterprise queries may be sensitive.

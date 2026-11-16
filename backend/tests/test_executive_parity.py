@@ -108,7 +108,7 @@ class EveryExecutiveHasTheStructuredChatPromptTests(unittest.TestCase):
         self.assertIn(chat_style.AUTHORIZATION_SUMMARY_PROMPT.strip(), cmo_agent.BASE_SYSTEM_PROMPT)
         self.assertIn(chat_style.AUTHORIZATION_SUMMARY_PROMPT.strip(), cto_agent.BASE_SYSTEM_PROMPT)
         for agent in ("cao", "coo"):
-            self.assertNotIn("executive_summary", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
+            # The CAO and COO may now write a RECOMMENDATION for approval (with a plain summary), but never a pull request: no execution_plan.
             self.assertNotIn("execution_plan", AGENTS[agent].BASE_SYSTEM_PROMPT, agent)
         for agent, module in AGENTS.items():
             self.assertTrue(module.BASE_SYSTEM_PROMPT.startswith("EXECUTIVE CONSTITUTION"), agent)

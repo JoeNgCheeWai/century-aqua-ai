@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.agents import base_constitution as bc  # noqa: E402
 from app.agents import cao_agent, cao_reasoning, cmo_agent, cmo_authorization, coo_agent, cto_agent, registry  # noqa: E402
 from app.agents import cross_validation as cv  # noqa: E402
+from app.agents import exec_checks  # noqa: E402
 from app.api import security  # noqa: E402
 from app.governance import audit  # noqa: E402
 from app.governance.rate_limit import limiter  # noqa: E402
@@ -70,6 +71,24 @@ POST = (
 )
 
 
+class _EnvAndNoSelfCheck:
+    """Wraps the env patcher so cmo_env() still returns one object with .stop(), and also switches the new self-check off.
+
+    These older tests are about the request NORMALISER, not the new self-check (its own tests are in tests/test_executive_capability.py).
+    """
+
+    def __init__(self, env_patcher):
+        from app.agents import exec_checks
+
+        self.env_patcher = env_patcher
+        self.check_patcher = mock.patch.dict(exec_checks.CHECKS, {"cmo": lambda request, outcome: exec_checks.Check(True, ["(self-check off in this test)"], [], [])})
+        self.check_patcher.start()
+
+    def stop(self):
+        self.check_patcher.stop()
+        self.env_patcher.stop()
+
+
 def cmo_env():
     """All four keys set, no database and no RAG keys, so no test can reach a network service."""
     patcher = mock.patch.dict(
@@ -79,7 +98,7 @@ def cmo_env():
     patcher.start()
     for name in ("GOVERNANCE_DATABASE_URL", "DATABASE_URL", "PINECONE_API_KEY", "OPENAI_API_KEY", "PINECONE_INDEX"):
         os.environ.pop(name, None)
-    return patcher
+    return _EnvAndNoSelfCheck(patcher)
 
 
 # A drafting request: the drafts are IN the response for a human to read, scenarios carry ILLUSTRATIVE engagement
@@ -831,6 +850,7 @@ class CmoAuditRowTests(unittest.IsolatedAsyncioTestCase):
         for patcher in (
             mock.patch.dict(os.environ, {"GOVERNANCE_DATABASE_URL": LOCAL_URL, "INTERNAL_CMO_KEY": CMO_KEY}),
             mock.patch.object(cmo_agent, "AGENT_ID", TEST_AGENT),
+            mock.patch.dict(exec_checks.CHECKS, {k: (lambda request, outcome: exec_checks.Check(True, ["(self-check off in this test)"], [], [])) for k in ("cmo", TEST_AGENT)}),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

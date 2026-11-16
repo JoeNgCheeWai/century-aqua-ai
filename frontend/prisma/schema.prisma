@@ -308,3 +308,34 @@ model ApprovedStrategies {
 
   @@index([agentRole, createdAt])
 }
+
+// The farm and operations records the CAO and the COO READ (never write). One generic table: a new kind of record is a new value of "kind", not a
+// migration. Which role may read which kind is enforced by the backend (app/governance/farm_records.py): the CAO reads water_quality, feeding,
+// mortality and sampling; the COO reads inventory and cost. An EMPTY table is normal until records are imported (backend/scripts/import_farm_records.py),
+// and the agents are told to say "no records loaded" and never to guess a figure.
+model FarmRecord {
+  id           Int      @id @default(autoincrement())
+  // water_quality | feeding | mortality | sampling | inventory | cost
+  kind         String
+  // The farm site and the pond, tank or store inside it, when the record has one.
+  site         String?
+  unit         String?
+  // What was measured or counted: "dissolved_oxygen", "feed_kg", "deaths", "ammonia", "feed_stock", "overtime_cost" ...
+  parameter    String
+  // The number, when the record is a number. valueText holds a non-numeric result ("negative", "pending").
+  value        Float?
+  valueText    String?
+  // The unit OF THE VALUE ("mg/L", "kg", "USD"). (unit above is the pond or store, not the measurement unit.)
+  measuredUnit String?
+  recordedAt   DateTime
+  // Where the record came from (a file name, a sensor, a person). Plain text, never a secret.
+  source       String?
+  notes        String?
+  // The import run that loaded it, so a bad import can be found and removed as a batch.
+  importBatch  String?
+  createdAt    DateTime @default(now())
+
+  @@index([kind, recordedAt])
+  @@index([kind, parameter])
+  @@index([importBatch])
+}

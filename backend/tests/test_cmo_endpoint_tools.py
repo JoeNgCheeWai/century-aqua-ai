@@ -52,7 +52,11 @@ class CmoEndpointToolTests(GuardedTestCase):
     def post(self, replies, message=QUERY):
         model = ScriptedClient(replies)
         out = io.StringIO()
-        with mock.patch.object(cmo_agent, "_client", model), contextlib.redirect_stdout(out):
+        from app.agents import exec_checks
+
+        # The new self-check has its own tests (tests/test_executive_capability.py); this file is about which tools are offered and how they run.
+        no_check = mock.patch.dict(exec_checks.CHECKS, {"cmo": lambda request, outcome: exec_checks.Check(True, ["(self-check off here)"], [], [])})
+        with mock.patch.object(cmo_agent, "_client", model), contextlib.redirect_stdout(out), no_check:
             response = self.client.post("/api/cmo", headers=self.headers, json={"message": message})
         return response, model, out.getvalue()
 
@@ -60,7 +64,8 @@ class CmoEndpointToolTests(GuardedTestCase):
         response, model, _ = self.post([_text_reply(_cmo_answer([]))])
         self.assertEqual(response.status_code, 200, response.text)
         tools = model.calls[0]["tools"]  # the keyword argument the Anthropic call actually received
-        self.assertEqual([t["name"] for t in tools], ["generate_image"])
+        # generate_image first and unchanged, then the two READ-ONLY tools added by executive capability parity (no write tool of any kind).
+        self.assertEqual([t["name"] for t in tools], ["generate_image", "read_brand_file", "diagnose_asset_request"])
         self.assertEqual(tools[0]["input_schema"]["required"], ["prompt"])
         self.assertIn("generate_image", model.calls[0]["system"])  # and the system prompt says it exists
 
@@ -81,7 +86,7 @@ class CmoEndpointToolTests(GuardedTestCase):
     def test_the_first_line_of_the_response_logs_the_tools_available_without_any_secret(self):
         _, _, printed = self.post([_text_reply(_cmo_answer([]))])
         first = printed.splitlines()[0]
-        self.assertEqual(first, "CMO tools available: ['generate_image'] (openai_key set: True, blob_token set: True)")
+        self.assertEqual(first, "CMO tools available: ['generate_image', 'read_brand_file', 'diagnose_asset_request'] (openai_key set: True, blob_token set: True)")
         self.assertNotIn(FAKE_KEY, printed)
         self.assertNotIn(FAKE_BLOB_TOKEN, printed)
 
@@ -89,7 +94,7 @@ class CmoEndpointToolTests(GuardedTestCase):
         env = {k: v for k, v in os.environ.items() if k != "BLOB_READ_WRITE_TOKEN"}
         with mock.patch.dict(os.environ, env, clear=True):
             _, _, printed = self.post([_text_reply(_cmo_answer([]))])
-        self.assertIn("['generate_image'] (openai_key set: True, blob_token set: False)", printed.splitlines()[0])
+        self.assertIn("'diagnose_asset_request'] (openai_key set: True, blob_token set: False)", printed.splitlines()[0])
         self.assertEqual(image_tool.readiness(), {"openai_key": True, "blob_token": True})  # restored after the block
 
     def test_the_endpoint_still_refuses_a_wrong_key_before_any_model_call(self):

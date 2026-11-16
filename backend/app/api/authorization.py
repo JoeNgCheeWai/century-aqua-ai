@@ -104,6 +104,15 @@ async def apply_decision(audit_id: int, action: str, actor: str, *, remember: bo
     """
     if not db.is_configured():
         raise HTTPException(status_code=503, detail="Authorization unavailable: the governance database is not configured.")
+    if action == "approve":
+        # THE CEO GATE (exec_approval.ceo_gate): the COO acting under delegation can never approve a recommendation involving animals, chemicals,
+        # statutory reporting or money above the threshold, whoever calls this. Re-computed from the stored text, not from a stored flag.
+        from app.agents import exec_approval, operational_approval
+
+        if actor == operational_approval.ACTOR:
+            refusal = exec_approval.ceo_gate(await admin_store.read_authorization_request(audit_id), actor)
+            if refusal:
+                raise HTTPException(status_code=403, detail=f"Refused: {refusal}.")
     try:
         outcome, row = await admin_store.decide_authorization(audit_id, action, actor)
     except Exception as exc:
@@ -129,6 +138,7 @@ async def apply_decision(audit_id: int, action: str, actor: str, *, remember: bo
         # Always false: even after a pull request is opened, the CHANGE is not live until a human merges it.
         "executed": False,
         "note": _NOTE,
+        "kind": "recommendation" if str(row["agentId"]) in ("cao", "coo") else "change",
     }
     if action == "approve":
         # THE LEARNING LOOP: remember what the CEO approved, so the agent that proposed it can recall it later as experience. This
