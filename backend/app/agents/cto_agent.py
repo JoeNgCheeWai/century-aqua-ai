@@ -39,6 +39,7 @@ from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
 from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CTO_CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
+from app.prompts.exec_tools_prompt import KNOWLEDGE_INTAKE_SHORT_PROMPT
 from app.prompts.persona import CTO_ENGINEER_PROMPT, persona_block, thinking_process
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ AGENT_ID = "cto"
 # authorization workflow, the execution_plan template and the JSON format below are unchanged.
 CTO_ROLE_PROMPT = (
     persona_block("cto") + "\n\n" + CTO_ENGINEER_PROMPT + "\n\n" + thinking_process("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CTO_CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
-    + "\n\n" + CTO_EXECUTION_PLAN_PROMPT
+    + "\n\n" + CTO_EXECUTION_PLAN_PROMPT + "\n\n" + KNOWLEDGE_INTAKE_SHORT_PROMPT  # the CTO may ask the COO for a source; it cannot reach the queue itself
 )
 
 # The constitution comes FIRST, then the CTO's own role prompt (Executive Constitution, Clause 0).

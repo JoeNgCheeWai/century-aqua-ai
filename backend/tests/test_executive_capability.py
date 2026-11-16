@@ -156,7 +156,9 @@ class ToolDispatchTests(WithDb):
 
     def test_the_tool_sets_are_exactly_the_specified_ones_and_have_no_write_tool(self):
         self.assertEqual(exec_tools.tool_names("cao"), ["read_farm_records", "read_knowledge_base", "diagnose_recommendation"])
-        self.assertEqual(exec_tools.tool_names("coo"), ["read_farm_records", "read_audit_log", "read_operations_summary", "diagnose_operational_routing"])
+        # The COO's last tool is its knowledge queue (knowledge_queue.py). It is the ONE tool here that writes, and only to the queue and the knowledge base
+        # (never a repository); it is COO-only and switched off by default. tests/test_knowledge_queue.py pins that.
+        self.assertEqual(exec_tools.tool_names("coo"), ["read_farm_records", "read_audit_log", "read_operations_summary", "diagnose_operational_routing", "manage_fetch_queue"])
         self.assertEqual(exec_tools.tool_names("cmo"), ["read_brand_file", "diagnose_asset_request"])
         for role in ("cao", "coo", "cmo"):
             for name in exec_tools.tool_names(role):

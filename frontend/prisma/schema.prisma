@@ -339,3 +339,54 @@ model FarmRecord {
   @@index([kind, parameter])
   @@index([importBatch])
 }
+
+// The COO's KNOWLEDGE QUEUE (the COO acts as Chief Information Officer). The CAO, CTO and CMO ask for sources the knowledge base lacks; the COO
+// keeps the queue and, when KNOWLEDGE_INGEST is on, runs the fetch and ingests the public pages it finds. Nothing is fetched on its own.
+enum FetchRequester {
+  CAO
+  CTO
+  CMO
+}
+
+enum FetchPriority {
+  HIGH
+  MED
+  LOW
+}
+
+enum FetchStatus {
+  PENDING
+  FETCHING
+  DONE
+  FAILED
+}
+
+model FetchRequest {
+  id          Int            @id @default(autoincrement())
+  requester   FetchRequester
+  query       String
+  priority    FetchPriority  @default(MED)
+  status      FetchStatus    @default(PENDING)
+  // The (normalised) URLs this request actually ingested. Pages that were already in the knowledge base are not listed here.
+  fetchedUrls String[]       @default([])
+  // Written by CODE after the run (what was found, ingested, skipped and why), never by a model.
+  summaryText String?
+  createdAt   DateTime       @default(now())
+  processedAt DateTime?
+
+  @@index([status, priority, createdAt])
+}
+
+// One row per public page that is in the knowledge base. The UNIQUE urlKey is what makes ingestion idempotent: the same page (however its URL is
+// spelled: tracking parameters, www, a trailing slash) can be claimed once, atomically, so it is never embedded twice.
+model IngestedSource {
+  id             Int      @id @default(autoincrement())
+  urlKey         String   @unique
+  url            String
+  title          String
+  chunks         Int      @default(0)
+  fetchRequestId Int?
+  createdAt      DateTime @default(now())
+
+  @@index([fetchRequestId])
+}
