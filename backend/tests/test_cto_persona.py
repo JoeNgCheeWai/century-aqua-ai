@@ -122,6 +122,27 @@ class TheOldNoToolsWordingWasCorrectedNotLeftContradictingTests(unittest.TestCas
         self.assertLess(len(SYSTEM) // 4, 16500)
 
 
+class TheConcisenessRuleIsThereTests(unittest.TestCase):
+    """Long feature designs ran past the serverless time limit, so the CTO must open with a short outline (CRITICAL RESPONSE RULE)."""
+
+    RULE = "CRITICAL RESPONSE RULE: When asked to design, plan, or build a feature, you MUST provide a high-level, concise summary first (under 200 words)."
+
+    def test_the_rule_is_at_the_top_of_the_ctos_own_prompt_with_its_exact_wording(self):
+        self.assertTrue(cto_prompt.CTO_SYSTEM_PROMPT.startswith(self.RULE))
+        for needle in ("Do NOT output full code blocks, exhaustive file structures, or complete implementations",
+                       "'show me the code' or 'generate the files'",
+                       "only outline the approach, required files, and next steps",
+                       "This prevents API timeout errors."):
+            self.assertIn(needle, cto_prompt.CTO_SYSTEM_PROMPT, needle)
+
+    def test_it_is_in_the_prompt_the_cto_really_sends_exactly_once_and_after_the_constitution(self):
+        self.assertEqual(SYSTEM.count(self.RULE), 1)
+        self.assertGreater(SYSTEM.index(self.RULE), SYSTEM.index("END OF EXECUTIVE CONSTITUTION"))
+
+    def test_the_other_executives_prompts_are_not_changed_by_it(self):
+        self.assertNotIn(self.RULE, cmo_agent.BASE_SYSTEM_PROMPT)
+
+
 class TheCtoStillAnswersInTheSharedFormatTests(unittest.TestCase):
     def test_a_conversational_answer_with_pushback_parses_and_keeps_its_plan(self):
         from app.agents import cao_reasoning, cto_authorization
