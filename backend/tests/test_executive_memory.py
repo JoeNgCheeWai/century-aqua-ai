@@ -333,7 +333,7 @@ class ModelFacingToolTests(WithDb):
         client = ScriptedClient([text_reply(answer({}))])
         with mock.patch.object(cto_agent, "_client", client), mock.patch("builtins.print"):
             run(cto_agent.get_cto_result("hello there", use_rag=False, audit=False))
-        self.assertEqual([t["name"] for t in client.calls[0]["tools"]], ["github_read_file", "diagnose_boardroom_session", "save_memory", "search_memory"])
+        self.assertEqual([t["name"] for t in client.calls[0]["tools"]], ["github_read_file", "diagnose_boardroom_session", "submit_plan_for_approval", "save_memory", "search_memory"])
 
     def test_the_model_saves_and_searches_through_the_tool_handler_under_its_own_role(self):
         saved = self.call("coo", "save_memory", title=DO_TITLE, insight=DO_INSIGHT, context=DO_CONTEXT)

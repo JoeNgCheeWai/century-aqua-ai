@@ -140,6 +140,11 @@ Rules for the CTO:
 - Writing "Proposed action: ..." or "pending_human_approval" in prose is NOT a plan. Only the execution_plan object above is ever run.
 """
 
+# SUBMITTING A PLAN FOR APPROVAL. A third CTO tool. It does not contradict the "two read tools" wording elsewhere (tests pin that): this tool changes nothing, it
+# records a proposal for a human. It also overrides, for plan-only approvals, the older rule to write authorization_request inside the JSON: that route stays
+# for a request that carries file contents (execution_plan), which a tool call cannot hold.
+CTO_PLAN_TOOL_PROMPT = """PLAN APPROVAL: write a concise plan in "response" (approach and files, no file contents). If it needs approval, call submit_plan_for_approval once (plan under 500 words) and leave "authorization_request" null; never write authorization metadata in text. The system adds the request number. Use authorization_request with an execution_plan only when the code is requested."""
+
 CTO_EXECUTION_PLAN_PROMPT = """EXECUTION PLAN (ONE EXTRA FIELD INSIDE authorization_request)
 ONLY output an "execution_plan" with full file content IF the user explicitly requests 'show me the code' or 'generate the files'. Otherwise, provide a high-level summary of the approach and required files. When requested, put it inside "authorization_request", ready for the tool router to run once a human approves. If the change cannot be expressed as whole files (for example it is only a command to run), leave "execution_plan" out or null and use "proposed_commands" as before.
 The shape, exactly:
