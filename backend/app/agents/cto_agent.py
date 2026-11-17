@@ -34,7 +34,7 @@ from app.agents import cto_tools, diagnostics, language_guard, memory_tools, ope
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
-from app.agents.chat_reply import vetted_chat_reply
+from app.agents.chat_reply import strip_boilerplate, vetted_chat_reply
 from app.agents.cto_authorization import audit_summary, normalize_authorization_request
 from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
@@ -522,6 +522,9 @@ async def get_cto_result(
     # added AFTER this, so they are never touched. A deflecting sentence that carries a command is kept and logged, never silently lost.
     text, removed_text, kept_text = language_guard.clean(parsed.response)
     chat_text, removed_chat, kept_chat = language_guard.clean(parsed.chat_reply)
+    # RESPONSE FORMAT: the CEO's first read is short. Code removes an Assumptions or What to check section, the Confidence rating and the human-review line from
+    # the CHAT reply only; the full response (scored by the Constitution, behind the details button) keeps them, so the score is unchanged.
+    chat_text = strip_boilerplate(chat_text)
     if removed_text or removed_chat:
         format_findings.append("language guard removed a deflection to someone else: " + " | ".join((removed_text + removed_chat)[:3]))
     if kept_text or kept_chat:
