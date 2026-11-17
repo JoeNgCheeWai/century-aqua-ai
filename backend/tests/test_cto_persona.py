@@ -121,12 +121,11 @@ class TheOldNoToolsWordingWasCorrectedNotLeftContradictingTests(unittest.TestCas
         # Raised from 16000 to 16500 for the short knowledge-intake line (about 60 tokens; see test_executive_parity). A ceiling, not a target.
         self.assertLess(len(SYSTEM) // 4, 16500)
 
-    def test_the_prompt_keeps_at_least_500_tokens_of_headroom_for_future_features(self):
-        # The prompt was trimmed (chore/trim-cto-prompt) after it reached 4 tokens under the ceiling and blocked every new feature. This is the guard that
-        # stops it creeping back: a new instruction has to fit in the space left, or something redundant has to be cut first. Estimated at 4 characters a token.
-        # TEMPORARILY 16400: the RESPONSE FORMAT block (about 290 tokens) lands in the commit before the aggressive trim (chore/trim-cto-prompt-v2), which sets the real target.
-        self.assertLess(len(SYSTEM) // 4, 16400, "the CTO prompt is within 100 tokens of the 16,500 ceiling: trim before you add")
-
+    def test_the_prompt_keeps_at_least_800_tokens_of_headroom_for_epistemic_memory_and_future_features(self):
+        # chore/trim-cto-prompt-v2 cut the prompt to about 15,200 estimated tokens (from 16,285 after the RESPONSE FORMAT block) to leave room for Tier 3 epistemic
+        # memory. This guard stops it creeping back: a new instruction has to fit in the space left, or something redundant has to be cut first. Estimated at
+        # 4 characters a token (the real input is roughly twice that once history, memory notes and tool schemas are added: see PROJECT_CONTEXT.md).
+        self.assertLessEqual(len(SYSTEM) // 4, 15200, "the CTO prompt has less than 800 tokens of headroom under the 16,000 target: trim before you add")
 
 class TheConcisenessRuleIsThereTests(unittest.TestCase):
     """Long feature designs ran past the serverless time limit, so the CTO must open with a short outline (CRITICAL RESPONSE RULE)."""
