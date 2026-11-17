@@ -409,3 +409,22 @@ model ExecutiveMemory {
   sourceChatId String?
   createdAt    DateTime @default(now())
 }
+
+// A notification for the CEO about a CRITICAL decision the COO escalated (the COO decides everything else). One row per task that needs the CEO.
+model CeoNotification {
+  id             Int       @id @default(autoincrement())
+  auditId        Int?
+  agentId        String?
+  title          String
+  explanation    String
+  recommendation String?
+  riskLevel      String?
+  status         String    @default("unread")
+  createdAt      DateTime  @default(now())
+  readAt         DateTime?
+  resolvedAt     DateTime?
+  resolvedBy     String?
+
+  @@index([status, createdAt])
+  @@index([auditId])
+}

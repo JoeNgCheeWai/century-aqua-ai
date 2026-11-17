@@ -150,7 +150,27 @@ async def apply_decision(audit_id: int, action: str, actor: str, *, remember: bo
         if outcome is not None:
             body["execution"] = outcome
             body["note"] = _NOTE_PR if outcome.get("status") == "succeeded" else _NOTE_PR_FAILED
+    await _log_task_events(audit_id, str(row["agentId"]), action, actor, body.get("execution"))
     return body
+
+
+async def _log_task_events(audit_id: int, agent_id: str, action: str, actor: str, execution: dict[str, Any] | None) -> None:
+    """
+    The AUTOMATIC audit trail and the notification clean-up for a decided task, in the one path every decision takes (a person's click and the COO's).
+    A person's decision is logged as ``ceo_decision``; the COO's is logged by the COO's own tool. An execution is logged whoever decided. Every open
+    notification about the task is settled, because the question it asked has been answered. NEVER RAISES and never changes the decision.
+    """
+    try:
+        from app.agents import operational_approval
+        from app.governance import ceo_notifications, task_events
+
+        if actor != operational_approval.ACTOR:
+            await task_events.record(audit_id, agent_id, "ceo_decision", decision=action, by=actor)
+        if execution is not None:
+            await task_events.record(audit_id, agent_id, "execution", status=execution.get("status"), pr_url=execution.get("pr_url"), error=execution.get("error"))
+        await ceo_notifications.resolve_for_audit(audit_id, actor)
+    except Exception as exc:  # the decision is already recorded; bookkeeping must never undo or hide it
+        logger.error("authorization: could not log task events for #%s (%s)", audit_id, type(exc).__name__)
 
 
 @router.post("/api/authorization/{audit_id}/approve")

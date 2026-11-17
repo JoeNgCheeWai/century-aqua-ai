@@ -65,6 +65,50 @@ export interface AuthorizationRequest {
   executed: boolean;
 }
 
+/** A critical decision the COO escalated, told to the CEO in plain language (in-app only: there is no email or push). */
+export interface CeoNotification {
+  id: number;
+  audit_id: number | null;
+  agent_id: string | null;
+  title: string;
+  explanation: string;
+  recommendation: string | null;
+  risk_level: string | null;
+  status: "unread" | "read" | "resolved";
+  created_at: string | null;
+  read_at: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+export interface NotificationList extends Paged<CeoNotification> {
+  /** The badge number: every unread notification, whatever the filter. */
+  unread: number;
+}
+
+/** One task the COO decided, with every decision and its reasoning (oldest first). */
+export interface CooDecisionItem {
+  audit_id: number;
+  agent_id: string;
+  action_summary: string;
+  risk_level: string | null;
+  human_action: HumanAction;
+  human_action_by: string | null;
+  at: string | null;
+  /** The COO's LAST decision. */
+  group: "approved" | "rejected" | "escalated";
+  coo_decisions: { decision: string; outcome: string; reasoning: string; at: string | null }[];
+  notification: { id: number; status: string } | null;
+}
+
+export interface CooDecisions {
+  items: CooDecisionItem[];
+  /** Written by code from the audit log, with what it cannot see. */
+  audit_summary: string;
+  audit_ok: boolean;
+  days: number;
+}
+
 export interface Scenario {
   description: string;
   timeline: string;

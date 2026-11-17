@@ -74,13 +74,13 @@ export default function DashboardView() {
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
         <Card>
-          <SectionTitle>Pending authorizations</SectionTitle>
+          <SectionTitle>Waiting for your decision</SectionTitle>
           <p className={`text-5xl font-light ${pending ? "text-amber-300" : "text-emerald-300"}`}>{pending ?? "-"}</p>
           <p className="mt-1 text-sm text-slate-400">
-            {pending == null ? "Could not be loaded." : pending === 0 ? "Nothing is waiting for a decision." : "Waiting for a human decision."}
+            {pending == null ? "Could not be loaded." : pending === 0 ? "Nothing is waiting for you. The COO has it covered." : "Critical items, or items the COO has not reviewed yet."}
           </p>
           <Link href="/mission-control/authorizations" className={`${buttonGhost} mt-4 inline-block`}>
-            Review requests
+            Review them
           </Link>
         </Card>
 

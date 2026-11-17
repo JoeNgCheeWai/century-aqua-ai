@@ -1,5 +1,5 @@
 """
-The CTO's PLAN-APPROVAL tool: submit_plan_for_approval(plan_summary, files_to_change, risk_level). CTO ONLY.
+The PLAN-APPROVAL tool: submit_plan_for_approval(plan_summary, files_to_change, risk_level). The CTO, CAO and CMO have it (never the COO, who decides them).
 
 WHY. The CTO used to carry its authorization request inside its one big JSON answer. When that answer hit the token limit the JSON was cut off and
 the request was lost ("structured JSON was incomplete or invalid"). With this tool the plan is submitted in a call of its own, in a SEPARATE model
@@ -8,7 +8,7 @@ round with its own token budget, so a long or cut-off final answer can no longer
 WHAT THE TOOL DOES. It validates the plan in code, builds a normal CTO authorization request from it (status forced to pending_human_approval,
 executed forced false, the risk level raised by the same path and text floors the JSON route uses) and STAGES it on the answer's ToolOutcome.
 cto_agent.get_cto_result then stores it with the answer in AgentAuditLog.authorizationRequest, exactly where a request in the JSON would go, so the
-CEO sees it on the Authorizations page. The audit row does not exist until the answer is recorded, so the request's number (the audit entry id) is
+COO can review it (review_executive_task). The audit row does not exist until the answer is recorded, so the request's number (the audit entry id) is
 only known then: code adds it to the reply. The tool itself cannot return it.
 
 WHAT IT DOES NOT DO.
@@ -36,15 +36,15 @@ MAX_CHARS = 6000  # a hard backstop on the summary whatever its word count
 MAX_FILES = plan_rules.MAX_FILES
 MAX_ATTEMPTS = 3  # calls per answer, accepted or refused
 MAX_ACTION_CHARS = 280  # the one-line action summary taken from the start of the plan
-MAX_IMPACT_PLAN_CHARS = 1400  # how much of the plan the Authorizations page shows under "Impact"
+MAX_IMPACT_PLAN_CHARS = 1400  # how much of the plan the decision pages show under "Impact"
 
 SPEC: dict[str, Any] = {
     "name": TOOL_NAME,
     "description": (
-        "Submit your PLAN for the CEO's approval. Use it AFTER you have written a concise plan in your answer, when the plan needs approval. Give the plan summary "
+        "Submit your PLAN to the COO for approval. Use it AFTER you have written a concise plan in your answer, when the plan needs approval. Give the plan summary "
         "(the approach in under 500 words, no file contents), the repository paths of the files you would change, and the risk. It records a proposal "
-        "for a human: it writes no file and opens no pull request, and nothing is applied until the CEO approves. Do NOT also write the authorization "
-        "metadata in your answer. Submit once per answer. Full file contents belong in a later turn, only if the CEO asks for the code."
+        "for review: it writes no file and opens no pull request, and nothing is applied until the COO approves (or, if it is critical, the CEO). Do NOT also write the authorization "
+        "metadata in your answer. Submit once per answer. Full file contents belong in a later turn, only if asked for the code."
     ),
     "input_schema": {
         "type": "object",
@@ -160,8 +160,16 @@ def submit(args: dict[str, Any], outcome: Any) -> Result:
             return f"NOT SUBMITTED: {note}", False
         outcome.plan_request = request
         extra = f" Note: {note}." if note else ""
-        return (f"Plan staged for the CEO's approval (risk {request['risk_level']}, {len(request['files_to_change'])} file(s) named). The system records it with "
-                f"this answer and adds its number to your reply. It is NOT approved: the CEO decides, and nothing is applied until then. Do not write any "
+        return (f"Plan staged for the COO's review (risk {request['risk_level']}, {len(request['files_to_change'])} file(s) named). The system records it with "
+                f"this answer and adds its number to your reply. It is NOT approved: the COO decides (a critical plan goes to the CEO), and nothing is applied until then. Do not write any "
                 f"authorization metadata in your answer, and do not say it is approved.{extra}"), True
     except Exception as exc:  # a tool must never take the app down
         return f"ERROR: the plan could not be submitted ({type(exc).__name__}). Describe the plan in your answer.", False
+
+def staged_plan_note(audit_id: int | None) -> str:
+    """The line CODE adds under a plan submitted with submit_plan_for_approval: its number, and the truth that it is waiting, not approved."""
+    if audit_id is None:
+        return ("**Plan not recorded:** I prepared this plan for approval, but the audit log was unavailable, so nobody can review it yet. "
+                "Ask me again in a moment.")
+    return (f"**Plan submitted for approval (request #{audit_id}):** it is waiting for the COO's review. The COO approves routine plans, and a critical one goes to you with an "
+            "explanation. Approving a plan records the decision only; no code is written until it is asked for.")

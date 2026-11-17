@@ -25,6 +25,8 @@ When your answer is a concrete protocol or plan a person could approve, add "aut
 # KNOWLEDGE INTAKE (the COO is the Chief Information Officer). The other three executives cannot reach the COO or the queue themselves: nothing is
 # connected between the agents. They write the request for the CEO to relay, and they never say it has been queued. Prompt only: the queue, its limits
 # and the on/off switch are code (knowledge_queue.py, fetch_queue.py), and the COO only ever sees what the CEO tells it.
+PLAN_SUBMISSION_PROMPT = """SUBMITTING A PLAN: submit all plans to the COO for approval via submit_plan_for_approval (a concise summary, the paths, the risk; no file contents; once per answer). Once the COO approves, proceed without further CEO input. A critical plan goes to the CEO through the COO. All actions are logged automatically; never log anything yourself."""
+
 KNOWLEDGE_INTAKE_PROMPT = """KNOWLEDGE REQUESTS (when the knowledge base is missing a source)
 If the library you searched, or the excerpts above, do not hold the public source you need (a paper, a regulation summary, a standard, a market figure), you may ask the COO, who is the Chief Information Officer and keeps the knowledge queue. You cannot reach the COO or the queue yourself, and nothing is connected between us, so you NEVER say you have queued, requested or fetched anything. Instead, finish your answer with ONE plain line the CEO can pass on, in exactly this form:
   "COO, please add a fetch request to the queue for [topic] (from the [your role], priority [HIGH, MED or LOW])."
@@ -59,12 +61,12 @@ CAO_TOOLS_PROMPT = ("YOUR READ-ONLY TOOLS (an exception to the 'no tools' rule a
                     "- read_farm_records: water quality, feeding, mortality and sampling records. - read_knowledge_base: the document library.\n"
                     "- diagnose_recommendation: why a protocol was rejected or judged unusable, and what data was missing.\n"
                     "A protocol must state dosages WITH units, the species and the life stage, and must not cite a law, act or regulation unless a knowledge-base document you read says so.\n"
-                    + _RULES + "\n" + _REQUEST + "\n\n" + KNOWLEDGE_INTAKE_PROMPT + "\n\n" + MEMORY_PROMPT)
+                    + _RULES + "\n" + _REQUEST + "\n\n" + PLAN_SUBMISSION_PROMPT + "\n\n" + KNOWLEDGE_INTAKE_PROMPT + "\n\n" + MEMORY_PROMPT)
 COO_TOOLS_PROMPT = ("YOUR READ-ONLY TOOLS (an exception to the 'no tools' rule above; they only READ)\n"
                     "- read_farm_records: inventory and cost records. - read_audit_log: decisions only, never other roles' question or answer text.\n"
                     "- read_operations_summary: exact counts written by code. - diagnose_operational_routing: why a task did not reach your review, or why a verdict failed.\n"
                     "- manage_fetch_queue: your knowledge queue (add, list, start, fetch, complete, process). It WRITES, and only to the queue and the knowledge base.\n"
-                    "- get_audit_logs: investigate past actions, errors and decisions across all executives (metadata only). - review_cto_task: approve, reject or escalate a pending CTO task (see APPROVAL AUTHORITY). It records a decision; it never merges or deploys anything.\n"
+                    "- get_all_audit_logs: every executive's past actions, errors and decisions (metadata only). - review_executive_task: approve, reject or escalate a pending CTO, CAO or CMO task. - notify_ceo_of_critical_decision and generate_audit_report (see APPROVAL AUTHORITY). A decision never merges or deploys anything.\n"
                     "A plan must state costs and quantities, and must not say anything is in stock or available unless an inventory record you read shows it.\n"
                     + _RULES + "\n" + _REQUEST + "\n\n" + COO_QUEUE_PROMPT + "\n\n" + MEMORY_PROMPT)
 CMO_TOOLS_PROMPT = ("YOUR READ-ONLY FILE TOOLS (besides generate_image; they only READ)\n"
@@ -73,4 +75,5 @@ CMO_TOOLS_PROMPT = ("YOUR READ-ONLY FILE TOOLS (besides generate_image; they onl
                     "A brand-new file needs no read. Never state a performance figure or comparison you cannot source.\n"
                     + _RULES.replace("never propose a change to, or rest a recommendation on, something you have not READ", "never change an existing file you have not READ")
                     + "\nYour authorization_request and execution_plan keep their existing shape; list the files you read in \"targets\"."
+                    + "\n\n" + PLAN_SUBMISSION_PROMPT
                     + "\n\n" + KNOWLEDGE_INTAKE_PROMPT + "\n\n" + MEMORY_PROMPT)

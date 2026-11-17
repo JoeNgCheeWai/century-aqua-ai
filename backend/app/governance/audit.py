@@ -147,10 +147,23 @@ async def record_response(
         )
         if score.needs_review:
             logger.warning("audit: %s response scored %s (< %s): %s", agent_id, score.score, REVIEW_THRESHOLD, "; ".join(score.findings))
+        if authorization_request is not None:
+            await _log_plan_submitted(audit_id, agent_id, authorization_request)
         return audit_id, score
     except Exception as exc:
         logger.error("audit: could not record %s response (%s)", agent_id, type(exc).__name__)
         return None, score
+
+
+async def _log_plan_submitted(audit_id: int, agent_id: str, request: dict[str, Any]) -> None:
+    """The AUTOMATIC ``plan_submitted`` event (task_events): the executive's own audit log and the COO's. Never raises, never delays the answer for long."""
+    try:
+        from app.governance import task_events
+
+        await task_events.record(audit_id, agent_id, "plan_submitted", risk=request.get("risk_level"), action=request.get("action_summary"),
+                                 via=request.get("submitted_via") or "answer")
+    except Exception as exc:
+        logger.error("audit: could not log the plan_submitted event for #%s (%s)", audit_id, type(exc).__name__)
 
 
 def _set_human_action_sync(audit_id: int, action: str) -> bool:

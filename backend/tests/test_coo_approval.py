@@ -1,5 +1,5 @@
 """
-THE COO'S APPROVAL AUTHORITY ("management by exception"): review_cto_task and get_audit_logs (app/agents/coo_tools.py).
+THE COO AS SOLE APPROVER: review_executive_task and get_all_audit_logs (app/agents/coo_tools.py). The notify and report tools are in test_simplified_authorization.py.
 
 Proven here, with no database and no network (an in-memory audit log, and the shared approval path replaced by a recorder):
   1. review_cto_task 'approve' goes through the shared approval path AS THE COO's delegate, logs the decision and reasoning, and reports the
@@ -30,7 +30,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.agents import coo_escalation, coo_tools, cto_agent, exec_tools, operational_approval as oa  # noqa: E402
 from app.api import authorization  # noqa: E402
-from app.governance import db, operations_log  # noqa: E402
+from app.governance import ceo_notifications, db, operations_log, task_events  # noqa: E402
 from app.prompts import coo_prompt, exec_tools_prompt  # noqa: E402
 from tests.test_cto_reads_before_writing import ScriptedClient, answer, text_reply, tool_reply  # noqa: E402
 from tests.test_read_file_tool import GuardedTestCase  # noqa: E402
@@ -38,7 +38,8 @@ from tests.test_read_file_tool import GuardedTestCase  # noqa: E402
 UI = "frontend/src/components/mc/Badge.tsx"
 PR_URL = "https://github.com/o/r/pull/3"
 WHEN = datetime(2026, 11, 17, 10, 0, 0)
-CTO_ASKS = {"review_cto_task": {"task_id": "1", "decision": "approve", "reasoning": "x"}, "get_audit_logs": {"agent_id": "all"}}
+CTO_ASKS = {"review_executive_task": {"task_id": "1", "decision": "approve", "reasoning": "x"}, "get_all_audit_logs": {"agent_id": "all"},
+            "notify_ceo_of_critical_decision": {"task_id": "1", "explanation": "x", "recommendation": "y"}, "generate_audit_report": {"period": "week"}}
 
 
 def cto_request(path=UI, content="export default function Badge() { return null; }\n", **extra):
@@ -59,6 +60,7 @@ class FakeAuditStore:
 
     def __init__(self):
         self.rows, self.applied, self.reviews, self.notes, self.audit_args = {}, [], [], [], None
+        self.events, self.notifications = [], []
 
     def add(self, audit_id, agent="cto", human="Pending", request=None, by=None, score=90):
         self.rows[audit_id] = {"id": audit_id, "agentId": agent, "humanAction": human, "humanActionBy": by, "constitutionalScore": score,
@@ -84,6 +86,13 @@ class FakeAuditStore:
         rows = [r for r in self.rows.values() if agent_id in (None, r["agentId"]) and (action_type != "pending" or r["humanAction"] == "Pending")]
         return rows[:limit]
 
+    def event(self, audit_id, agent_id, body):
+        self.events.append((audit_id, agent_id, body))
+
+    def notify(self, audit_id, agent_id, title, explanation, recommendation, risk):
+        self.notifications.append({"audit_id": audit_id, "agent": agent_id, "title": title, "explanation": explanation, "recommendation": recommendation, "risk": risk})
+        return len(self.notifications), True
+
     async def record_review(self, audit_id, route, kind, reasons, coo, *, force=False):
         self.reviews.append({"id": audit_id, "route": route, "kind": kind, "reasons": reasons, "coo": coo, "force": force})
         return True
@@ -107,13 +116,14 @@ class CooToolCase(unittest.TestCase):
                    mock.patch.object(coo_tools, "_read_task_sync", self.store.read), mock.patch.object(coo_tools, "_append_decision_sync", self.store.append),
                    mock.patch.object(coo_tools, "_note_sync", self.store.note), mock.patch.object(coo_tools, "_audit_sync", self.store.audit),
                    mock.patch.object(oa, "_record", self.store.record_review), mock.patch.object(authorization, "apply_decision", self.store.apply),
+                   mock.patch.object(task_events, "_record_sync", self.store.event), mock.patch.object(ceo_notifications, "_create_sync", self.store.notify),
                    mock.patch("builtins.print")]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
 
     def review(self, task_id, decision, reasoning="Routine and well reported."):
-        return run(coo_tools.review_cto_task(task_id, decision, reasoning))
+        return run(coo_tools.review_executive_task(task_id, decision, reasoning))
 
 
 class ApproveTests(CooToolCase):
@@ -175,8 +185,10 @@ class EscalateTests(CooToolCase):
         text, ok, _, _ = self.review(42, "escalate", "It changes how the CEO's approval box behaves; the CEO should decide.")
         self.assertTrue(ok, text)
         self.assertEqual(self.store.applied, [])  # nothing approved, nothing rejected, nothing run
-        self.assertEqual(self.store.rows[42]["humanAction"], "Pending")  # it stays on the CEO's Authorizations page
+        self.assertEqual(self.store.rows[42]["humanAction"], "Pending")  # it stays Pending, in the CEO's decision list
         self.assertIn("escalated to the CEO", text)
+        self.assertIn("not critical, so no notification was sent", text)
+        self.assertEqual(self.store.notifications, [])
         entry = self.store.request(42)["coo_decisions"][0]
         self.assertEqual((entry["decision"], entry["outcome"]), ("escalate", "escalated"))
         self.assertIn("the CEO should decide", entry["reasoning"])
@@ -203,12 +215,14 @@ class TheCodeFloorTests(CooToolCase):
 
     def approve_expecting_escalation(self, request):
         self.store.rows.clear()
+        self.store.notifications.clear()
         self.store.add(5, request=request)
         text, ok, _, _ = self.review(5, "approve", "Looks fine to me.")
         self.assertFalse(ok, text)
         self.assertIn("NOT APPROVED: code escalated task #5 to the CEO", text)
         self.assertEqual(self.store.applied, [])  # nothing was approved or run
         self.assertEqual(self.store.rows[5]["humanAction"], "Pending")
+        self.assertEqual([n["audit_id"] for n in self.store.notifications], [5])  # and the CEO was notified, by code
         entry = self.store.request(5)["coo_decisions"][0]
         self.assertEqual((entry["decision"], entry["outcome"]), ("approve", "escalated"))  # on record: the COO said approve, code escalated it
         self.assertIn("Code escalated it instead", entry["reasoning"])
@@ -243,11 +257,17 @@ class TheCodeFloorTests(CooToolCase):
     def test_commands_critical_risk_and_a_missing_rollback_plan_are_escalated(self):
         self.approve_expecting_escalation(cto_request(proposed_commands=["npm run build"]))
         self.approve_expecting_escalation(cto_request(risk_level="critical"))
-        self.assertIn("no rollback plan", self.approve_expecting_escalation(cto_request(rollback_plan="")))
 
-    def test_a_plan_that_fails_the_code_self_check_is_escalated(self):
-        text = self.approve_expecting_escalation(cto_request(content="// ... rest of the file\n"))
-        self.assertIn("failed the code self-check", text)
+    def test_a_plan_that_fails_the_self_check_or_has_no_rollback_is_sent_back_not_up_and_the_ceo_is_not_told(self):
+        for request, why in ((cto_request(content="// ... rest of the file\n"), "failed the code self-check"), (cto_request(rollback_plan=""), "no rollback plan")):
+            self.store.rows.clear()
+            self.store.add(5, request=request)
+            text, ok, _, _ = self.review(5, "approve")
+            self.assertFalse(ok, text)
+            self.assertIn("is not ready", text)
+            self.assertIn(why, text)
+            self.assertIn("Reject it with these reasons", text)
+            self.assertEqual((self.store.applied, self.store.notifications), ([], []))
 
     def test_the_floor_does_not_apply_to_a_reject_because_rejecting_is_always_safe(self):
         self.store.add(5, request=cto_request(path="frontend/prisma/schema.prisma", content="model A {\n}\n"))
@@ -285,12 +305,19 @@ class TheSwitchTests(CooToolCase):
 
 
 class WhichTaskMayBeDecidedTests(CooToolCase):
-    def test_only_a_cto_task_never_the_caos_the_cmos_or_the_coos_own(self):
-        for agent in ("cao", "cmo", "coo"):
+    def test_the_ctos_caos_and_cmos_tasks_may_be_decided_but_never_the_coos_own(self):
+        for agent in ("cto", "cao", "cmo"):
+            self.store.rows.clear()
             self.store.add(10, agent=agent, request=cto_request())
             text, ok, _, _ = self.review(10, "approve")
-            self.assertFalse(ok, agent)
-            self.assertIn(f"{agent.upper()} entry, not a CTO task", text)
+            self.assertTrue(ok, (agent, text))
+        self.assertEqual([a["id"] for a in self.store.applied], [10, 10, 10])
+        self.store.rows.clear()
+        self.store.applied.clear()
+        self.store.add(10, agent="coo", request=cto_request())
+        text, ok, _, _ = self.review(10, "approve")
+        self.assertFalse(ok)
+        self.assertIn("never your own", text)
         self.assertEqual(self.store.applied, [])
 
     def test_a_task_someone_already_decided_is_refused_because_a_decision_is_final(self):
@@ -309,7 +336,7 @@ class WhichTaskMayBeDecidedTests(CooToolCase):
         self.store.add(13, request=cto_request())
         for args in (("abc", "approve", "x"), (True, "approve", "x"), (-1, "approve", "x"), (0, "approve", "x"), (None, "approve", "x"),
                      (13, "delete", "x"), (13, None, "x"), (13, "approve", ""), (13, "approve", "   "), (13, "approve", None), (13, "approve", 5)):
-            text, ok, _, _ = run(coo_tools.review_cto_task(*args))
+            text, ok, _, _ = run(coo_tools.review_executive_task(*args))
             self.assertFalse(ok, args)
             self.assertTrue(text.startswith("ERROR:"), args)
         self.assertEqual((self.store.applied, self.store.rows[13]["humanAction"]), ([], "Pending"))
@@ -348,7 +375,7 @@ class GetAuditLogsTests(CooToolCase):
 
     def test_it_retrieves_the_logs_of_one_agent_only(self):
         self.fill()
-        text, ok, target, rows = run(coo_tools.get_audit_logs("cto"))
+        text, ok, target, rows = run(coo_tools.get_all_audit_logs("cto"))
         self.assertTrue(ok, text)
         self.assertEqual((target, rows), ("audit_log", 2))
         self.assertEqual(self.store.audit_args, ("cto", None, coo_tools.DEFAULT_LIMIT))
@@ -360,43 +387,43 @@ class GetAuditLogsTests(CooToolCase):
 
     def test_it_filters_by_action_type_and_limit_and_reads_across_every_executive_with_all(self):
         self.fill()
-        text, ok, _, rows = run(coo_tools.get_audit_logs("cto", "pending", 1))
+        text, ok, _, rows = run(coo_tools.get_all_audit_logs("cto", "pending", 1))
         self.assertEqual((ok, rows, self.store.audit_args), (True, 1, ("cto", "pending", 1)))
         self.assertIn("[1]", text)
         self.assertNotIn("[3]", text)  # approved, not pending
-        _, _, _, everyone = run(coo_tools.get_audit_logs("all"))
+        _, _, _, everyone = run(coo_tools.get_all_audit_logs("all"))
         self.assertEqual((everyone, self.store.audit_args[0]), (4, None))
 
     def test_a_pending_cto_task_shows_what_the_coo_needs_to_decide_it(self):
         self.store.add(20, request=cto_request(path="frontend/prisma/schema.prisma", content="model A {\n}\n"))
-        text, _, _, _ = run(coo_tools.get_audit_logs("cto", "pending"))
+        text, _, _, _ = run(coo_tools.get_all_audit_logs("cto", "pending"))
         self.assertIn("changes: frontend/prisma/schema.prisma", text)
         self.assertIn("impact: One new visible badge.", text)
-        self.assertIn("code check: must go to the CEO because", text)
+        self.assertIn("code check: CRITICAL, so it is the CEO's:", text)
         self.store.rows.clear()
         self.store.add(21, request=cto_request())
-        self.assertIn("code check: no reason found to escalate", run(coo_tools.get_audit_logs("cto", "pending"))[0])
+        self.assertIn("code check: no critical reason found; the COO may decide it", run(coo_tools.get_all_audit_logs("cto", "pending"))[0])
 
     def test_it_never_returns_the_text_of_a_question_or_an_answer(self):
         self.store.add(30, request=cto_request())
         self.store.rows[30].update({"query": "SECRET QUESTION TEXT", "response": "SECRET ANSWER TEXT"})
-        text, _, _, _ = run(coo_tools.get_audit_logs("cto"))
+        text, _, _, _ = run(coo_tools.get_all_audit_logs("cto"))
         self.assertNotIn("SECRET", text)
 
     def test_the_limit_is_clamped_and_a_bad_agent_or_action_type_is_refused(self):
-        run(coo_tools.get_audit_logs("cto", None, 9999))
+        run(coo_tools.get_all_audit_logs("cto", None, 9999))
         self.assertEqual(self.store.audit_args[2], coo_tools.MAX_LIMIT)
-        run(coo_tools.get_audit_logs("cto", None, 0))
+        run(coo_tools.get_all_audit_logs("cto", None, 0))
         self.assertEqual(self.store.audit_args[2], 1)
-        run(coo_tools.get_audit_logs("cto", None, True))  # a bool is not a number
+        run(coo_tools.get_all_audit_logs("cto", None, True))  # a bool is not a number
         self.assertEqual(self.store.audit_args[2], coo_tools.DEFAULT_LIMIT)
         for args in (("intern",), (None,), ("cto; DROP TABLE x",), ("cto", "everything")):
-            text, ok, _, _ = run(coo_tools.get_audit_logs(*args))
+            text, ok, _, _ = run(coo_tools.get_all_audit_logs(*args))
             self.assertFalse(ok, args)
             self.assertTrue(text.startswith("ERROR:"), args)
 
     def test_no_matching_entries_is_said_plainly(self):
-        text, ok, _, rows = run(coo_tools.get_audit_logs("cto"))
+        text, ok, _, rows = run(coo_tools.get_all_audit_logs("cto"))
         self.assertEqual((ok, rows, text), (True, 0, "The audit log has no matching entries."))
 
 
@@ -448,7 +475,7 @@ class TheRealQueryTests(unittest.TestCase):
 
 
 class OnlyTheCooHoldsTheToolsTests(GuardedTestCase):
-    """Test 4: the CAO, the CMO and the CTO can neither see nor call review_cto_task and get_audit_logs."""
+    """Test 4: the CAO, the CMO and the CTO can neither see nor call any of the COO's four authority tools."""
 
     names = coo_tools.TOOL_NAMES
 
@@ -462,9 +489,10 @@ class OnlyTheCooHoldsTheToolsTests(GuardedTestCase):
     def test_the_other_tool_lists_are_unchanged_and_the_new_tools_sit_before_memory_in_the_coos(self):
         memory = ["save_memory", "search_memory"]
         self.assertEqual(exec_tools.tool_names("coo"), ["read_farm_records", "read_audit_log", "read_operations_summary", "diagnose_operational_routing",
-                                                        "manage_fetch_queue", "review_cto_task", "get_audit_logs", *memory])
-        self.assertEqual(exec_tools.tool_names("cao"), ["read_farm_records", "read_knowledge_base", "diagnose_recommendation", *memory])
-        self.assertEqual(exec_tools.tool_names("cmo"), ["read_brand_file", "diagnose_asset_request", *memory])
+                                                        "manage_fetch_queue", "review_executive_task", "notify_ceo_of_critical_decision", "get_all_audit_logs",
+                                                        "generate_audit_report", *memory])
+        self.assertEqual(exec_tools.tool_names("cao"), ["read_farm_records", "read_knowledge_base", "diagnose_recommendation", "submit_plan_for_approval", *memory])
+        self.assertEqual(exec_tools.tool_names("cmo"), ["read_brand_file", "diagnose_asset_request", "submit_plan_for_approval", *memory])
 
     def test_every_other_role_is_refused_by_the_handler_even_if_it_somehow_names_the_tool(self):
         for role in ("cao", "cmo", "cto", "ceo", "x"):
@@ -476,8 +504,8 @@ class OnlyTheCooHoldsTheToolsTests(GuardedTestCase):
         for role in ("cao", "cmo"):
             for name, args in CTO_ASKS.items():
                 block = SimpleNamespace(type="tool_use", id="tu_1", name=name, input=args)
-                with mock.patch.object(coo_tools, "review_cto_task", side_effect=AssertionError("reached the tool")), \
-                        mock.patch.object(coo_tools, "get_audit_logs", side_effect=AssertionError("reached the tool")):
+                with mock.patch.object(coo_tools, "review_executive_task", side_effect=AssertionError("reached the tool")), \
+                        mock.patch.object(coo_tools, "get_all_audit_logs", side_effect=AssertionError("reached the tool")):
                     result = run(exec_tools.handle_block(role, block, exec_tools.ExecOutcome(role)))
                 self.assertTrue(result["is_error"], (role, name))
                 self.assertIn("is not one of your tools", result["content"])
@@ -486,7 +514,7 @@ class OnlyTheCooHoldsTheToolsTests(GuardedTestCase):
         store = FakeAuditStore()
         store.add(1, request=cto_request())
         outcome = exec_tools.ExecOutcome("coo")
-        block = SimpleNamespace(type="tool_use", id="tu_9", name="get_audit_logs", input={"agent_id": "cto", "action_type": "pending"})
+        block = SimpleNamespace(type="tool_use", id="tu_9", name="get_all_audit_logs", input={"agent_id": "cto", "action_type": "pending"})
         with mock.patch.object(db, "is_configured", return_value=True), mock.patch.object(coo_tools, "_audit_sync", store.audit), \
                 mock.patch.object(exec_tools, "_log", mock.AsyncMock()), mock.patch("builtins.print"):
             result = run(exec_tools.handle_block("coo", block, outcome))
@@ -499,8 +527,8 @@ class OnlyTheCooHoldsTheToolsTests(GuardedTestCase):
         for name in self.names:
             client = ScriptedClient([tool_reply("x", name=name), text_reply(answer({}))])
             with mock.patch.object(cto_agent, "_client", client), mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()), \
-                    mock.patch.object(coo_tools, "review_cto_task", side_effect=AssertionError("the CTO reached the tool")), \
-                    mock.patch.object(coo_tools, "get_audit_logs", side_effect=AssertionError("the CTO reached the tool")):
+                    mock.patch.object(coo_tools, "review_executive_task", side_effect=AssertionError("the CTO reached the tool")), \
+                    mock.patch.object(coo_tools, "get_all_audit_logs", side_effect=AssertionError("the CTO reached the tool")):
                 run(cto_agent.get_cto_result("approve my own task", use_rag=False, audit=False))
             self.assertNotIn(name, [t["name"] for t in client.calls[0]["tools"]], name)
             tool_result = client.calls[1]["messages"][-1]["content"][0]
@@ -526,34 +554,35 @@ class BoundsTests(CooToolCase):
         extra = coo_tools.MAX_DECISIONS_PER_TURN + 2
         for n in range(extra):
             self.store.add(100 + n, request=cto_request())
-        results = [run(coo_tools.handle("coo", "review_cto_task", {"task_id": str(100 + n), "decision": "escalate", "reasoning": "r"}, outcome))
+        results = [run(coo_tools.handle("coo", "review_executive_task", {"task_id": str(100 + n), "decision": "escalate", "reasoning": "r"}, outcome))
                    for n in range(extra)]
         self.assertEqual([r[1] for r in results], [True] * coo_tools.MAX_DECISIONS_PER_TURN + [False, False])
         self.assertIn("Decision limit reached", results[-1][0])
-        reads = [run(coo_tools.handle("coo", "get_audit_logs", {"agent_id": "all"}, outcome)) for _ in range(coo_tools.MAX_AUDIT_QUERIES_PER_TURN + 1)]
+        reads = [run(coo_tools.handle("coo", "get_all_audit_logs", {"agent_id": "all"}, outcome)) for _ in range(coo_tools.MAX_AUDIT_QUERIES_PER_TURN + 1)]
         self.assertEqual([r[1] for r in reads], [True] * coo_tools.MAX_AUDIT_QUERIES_PER_TURN + [False])
         self.assertIn("Audit-read limit reached", reads[-1][0])
 
     def test_a_crash_inside_a_tool_never_escapes_the_handler(self):
-        with mock.patch.object(coo_tools, "review_cto_task", side_effect=RuntimeError("boom")):
-            text, ok, _, _ = run(coo_tools.handle("coo", "review_cto_task", {}, exec_tools.ExecOutcome("coo")))
+        with mock.patch.object(coo_tools, "review_executive_task", side_effect=RuntimeError("boom")):
+            text, ok, _, _ = run(coo_tools.handle("coo", "review_executive_task", {}, exec_tools.ExecOutcome("coo")))
         self.assertFalse(ok)
         self.assertIn("Nothing was changed", text)
 
 
 class ThePromptTests(unittest.TestCase):
-    def test_the_coo_prompt_has_the_approval_authority_section_with_both_lists(self):
+    def test_the_coo_prompt_makes_it_the_sole_authorization_point_with_both_lists(self):
         text = coo_prompt.COO_SYSTEM_PROMPT
-        self.assertIn("APPROVAL AUTHORITY (Management by Exception)", text)
-        for needle in ("YOU CAN APPROVE:", "code refactoring, bug fixes, UI/UX improvements, documentation, test additions, prompt optimizations",
-                       "feature enhancements that do not alter core data schemas", "YOU MUST ESCALATE TO THE CEO:", "database schema deletions or major restructuring",
-                       "security or authentication changes", "new third-party API integrations", "changes to financial logic", "changes to governance rules",
-                       "anything you are uncertain about", 'decision "approve"', "When in doubt, always escalate"):
+        self.assertIn("APPROVAL AUTHORITY (you are the sole authorization point for all executives)", text)
+        for needle in ("You are the sole authorization point for the CTO, the CAO and the CMO", "Approve low, medium and high risk tasks",
+                       "For critical risk, escalate to the CEO with a plain-language explanation via notify_ceo_of_critical_decision",
+                       "Conduct periodic audits using get_all_audit_logs and generate_audit_report", "APPROVE what is low, medium or high risk and not critical",
+                       "CRITICAL goes to the CEO:", "database schema changes", "security or authentication", "governance or approval rules", "billing or financial logic",
+                       "new third-party services", "NOT READY", "Never log anything by hand"):
             self.assertIn(needle, text, needle)
 
     def test_the_prompt_says_code_backs_the_coo_up_and_that_an_approval_is_not_live(self):
         text = coo_prompt.COO_SYSTEM_PROMPT
-        self.assertIn("if a task is on it, the task is escalated whatever you chose", text)
+        self.assertIn("escalates a critical task whatever you chose, and notifies the CEO itself", text)
         self.assertIn("a person still reviews and merges", text)
         self.assertIn('never as "I have approved"', text)
 
@@ -571,11 +600,10 @@ class ThePromptTests(unittest.TestCase):
                 self.assertNotIn(wording, text.lower(), wording)
 
     def test_only_the_coo_tool_prompt_names_the_new_tools(self):
-        self.assertIn("review_cto_task", exec_tools_prompt.COO_TOOLS_PROMPT)
-        self.assertIn("get_audit_logs", exec_tools_prompt.COO_TOOLS_PROMPT)
-        for text in (exec_tools_prompt.CAO_TOOLS_PROMPT, exec_tools_prompt.CMO_TOOLS_PROMPT):
-            self.assertNotIn("review_cto_task", text)
-            self.assertNotIn("get_audit_logs", text)
+        for name in coo_tools.TOOL_NAMES:
+            self.assertIn(name, exec_tools_prompt.COO_TOOLS_PROMPT + coo_prompt.COO_SYSTEM_PROMPT, name)
+            for text in (exec_tools_prompt.CAO_TOOLS_PROMPT, exec_tools_prompt.CMO_TOOLS_PROMPT):
+                self.assertNotIn(name, text, name)
         self.assertLess(len(coo_prompt.COO_SYSTEM_PROMPT + exec_tools_prompt.COO_TOOLS_PROMPT) // 4, 16_500)
 
 

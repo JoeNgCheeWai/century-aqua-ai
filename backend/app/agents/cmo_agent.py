@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 from anthropic import AsyncAnthropic
 
-from app.agents import exec_checks, exec_tools, image_tool, language_guard, operational_approval, tools as github_tools
+from app.agents import cto_tools, exec_checks, exec_tools, image_tool, language_guard, operational_approval, tools as github_tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import STRUCTURED_CHAT_REPLY_CHARS, load_json_object, parse_cao_output
@@ -334,6 +334,12 @@ async def get_cmo_result(
             authorization_request, checked, declaration = exec_checks.self_check(AGENT_ID, authorization_request, outcome)
             format_findings.extend([*rbw, *checked])
             dropped = [f for f in (*rbw, *checked) if "dropped" in f]  # the reads themselves are logged to AdminAuditLog (exec_tools)
+    # A plan the CMO submitted through submit_plan_for_approval: validated when the tool ran, used only when the answer's JSON gave no request of its own.
+    # It has no file contents or mockups, so approving it records the decision and runs nothing.
+    staged_plan = outcome.plan_request if authorization_request is None else None
+    if staged_plan is not None:
+        authorization_request = dict(staged_plan)
+        format_findings.append("authorization request came from submit_plan_for_approval (not from the answer's JSON)")
     if format_findings:
         logger.warning("CMO output format: %s", "; ".join(format_findings))
 
@@ -408,7 +414,9 @@ async def get_cmo_result(
         if declaration:
             chat_text = chat_text.rstrip() + "\n\n" + declaration
     note = ""
-    if audit_id is not None and authorization_request is not None:
+    if staged_plan is not None:  # the number is the audit entry id, known only now; code writes this line
+        note = cto_tools.staged_plan_note(audit_id)
+    elif audit_id is not None and authorization_request is not None:
         routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request, originals=outcome.texts)
         note = operational_approval.approval_note(routed)
     if authorization_request is not None and not note:

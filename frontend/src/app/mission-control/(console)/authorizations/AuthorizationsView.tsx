@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import AuthorizationCard from "@/components/mc/AuthorizationCard";
+import CriticalNotifications from "@/components/mc/CriticalNotifications";
 import { Empty, ErrorNote, PageTitle, Spinner, buttonGhost, inputClass } from "@/components/mc/ui";
 import { mc, useLoad } from "@/lib/mc-client";
 import type { AuditEntry, Paged } from "@/lib/mc-types";
@@ -20,7 +21,11 @@ export default function AuthorizationsView() {
 
   return (
     <>
-      <PageTitle title="Authorization requests" subtitle="Changes and publications the agents proposed. They act on nothing until a human decides." />
+      <PageTitle
+        title="Needs your decision"
+        subtitle="The COO approves routine tasks for every executive. Only critical ones, and anything the COO has not reviewed yet, reach you."
+      />
+      <CriticalNotifications />
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div role="tablist" aria-label="Decision" className="flex gap-2">
@@ -49,8 +54,9 @@ export default function AuthorizationsView() {
           className={`${inputClass} max-w-[10rem]`}
           aria-label="Filter by agent"
         >
-          <option value="">Both agents</option>
+          <option value="">Every executive</option>
           <option value="cto">CTO</option>
+          <option value="cao">CAO</option>
           <option value="cmo">CMO</option>
         </select>
         <button onClick={reload} className={buttonGhost}>
@@ -60,7 +66,7 @@ export default function AuthorizationsView() {
       </div>
 
       {error && <ErrorNote message={error} onRetry={reload} />}
-      {data && data.items.length === 0 && <Empty>{view === "Pending" ? "Nothing is waiting for a decision." : `No ${view.toLowerCase()} requests.`}</Empty>}
+      {data && data.items.length === 0 && <Empty>{view === "Pending" ? "Nothing is waiting for you. The COO has it covered." : `No ${view.toLowerCase()} requests.`}</Empty>}
 
       <div className="space-y-4">
         {(data?.items ?? []).map((entry) => (

@@ -24,7 +24,9 @@ from app.api.admin.agents.reset import router as reset_router
 from app.api.audit_logs import router as audit_logs_router
 from app.api.authorization import router as authorization_router
 from app.api.cao import router as cao_router
+from app.api.ceo_notifications import router as ceo_notifications_router
 from app.api.cmo import router as cmo_router
+from app.api.coo_decisions import router as coo_decisions_router
 from app.api.coo import router as coo_router
 from app.api.council import router as council_router
 from app.api.council_sessions import router as council_sessions_router
@@ -52,6 +54,10 @@ app.include_router(council_router)
 # INTERNAL_COUNCIL_KEY, which doubles as the admin key (no agent key opens them).
 app.include_router(audit_logs_router)
 app.include_router(authorization_router)
+# The CEO's notifications (a critical decision the COO escalated), gated by the same INTERNAL_COUNCIL_KEY.
+app.include_router(ceo_notifications_router)
+# What the COO decided (the COO Decisions dashboard), same key.
+app.include_router(coo_decisions_router)
 # The COO's Operations Summary (what it approved on the CEO's behalf), gated by the same INTERNAL_COUNCIL_KEY.
 app.include_router(operations_router)
 app.include_router(cross_check_router)

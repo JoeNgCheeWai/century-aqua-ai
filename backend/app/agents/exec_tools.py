@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.agents import execution_plan as plan_rules
-from app.agents import coo_tools, knowledge_queue, memory_tools
+from app.agents import coo_tools, cto_tools, knowledge_queue, memory_tools
 from app.governance import admin_store, db, farm_records, operations_log
 
 logger = logging.getLogger(__name__)
@@ -68,9 +68,14 @@ class ExecOutcome:
     # The executives' episodic memory (memory_tools.py): how many saves and searches this answer made, so code can bound them.
     memory_saves: int = 0
     memory_searches: int = 0
-    # The COO's approval authority (coo_tools.py): how many CTO-task decisions and audit-log reads this answer made, so code can bound them.
+    # The COO's approval authority (coo_tools.py): how many task decisions, CEO notifications and audit reads or reports this answer made, so code can bound them.
     coo_decisions: int = 0
+    ceo_notifications: int = 0
     audit_queries: int = 0
+    # submit_plan_for_approval (cto_tools.py) for the CAO and the CMO: the validated request it STAGED. The agent stores it with the answer, because the
+    # audit row it belongs to does not exist until the answer is recorded.
+    plan_request: dict[str, Any] | None = None
+    plan_attempts: int = 0
     inventory_rows: int = 0
     cost_rows: int = 0
     farm_rows: int = 0
@@ -112,6 +117,7 @@ SPECS: dict[str, list[dict[str, Any]]] = {
         _spec("diagnose_recommendation",
               "Find out WHY a recommendation or protocol was rejected, left pending or judged unusable, and what data was missing. Read-only. "
               "Use it immediately when asked why; never offer to investigate.", _audit_id_prop()),
+        cto_tools.SPEC,  # the plan goes to the COO for approval: staged on the outcome and stored with the answer, never written anywhere here
     ],
     "coo": [
         _farm_spec("coo"),
@@ -125,7 +131,7 @@ SPECS: dict[str, list[dict[str, Any]]] = {
               "Find out WHY a task did not reach COO review, or why a COO verdict failed. Read-only. "
               "Use it immediately when asked why; never offer to investigate.", _audit_id_prop()),
         knowledge_queue.TOOL_SPEC,  # writes the queue and the knowledge base: COO only, switched off by default, bounded
-        *coo_tools.SPECS,  # APPROVAL AUTHORITY (COO only): review_cto_task decides a pending CTO task, get_audit_logs investigates. Never in another role's list.
+        *coo_tools.SPECS,  # SOLE APPROVER (COO only): review_executive_task, notify_ceo_of_critical_decision, get_all_audit_logs, generate_audit_report. Never in another role's list.
     ],
     "cmo": [
         _spec("read_brand_file",
@@ -136,6 +142,7 @@ SPECS: dict[str, list[dict[str, Any]]] = {
         _spec("diagnose_asset_request",
               "Find out WHY an asset request was rejected or dropped, and which brand rule or parser check failed. Read-only. "
               "Use it immediately when asked why; never offer to investigate.", _audit_id_prop()),
+        cto_tools.SPEC,  # the plan goes to the COO for approval: staged on the outcome and stored with the answer, never written anywhere here
     ],
 }
 for _role in SPECS:  # every executive gets the shared episodic memory (save_memory, search_memory): one record, found by meaning, kept for later chats
@@ -292,6 +299,11 @@ async def handle_block(role: str, block: Any, outcome: ExecOutcome) -> dict[str,
         if name in memory_tools.TOOL_NAMES and name in tool_names(role):
             text, ok, target, rows = await memory_tools.handle(role, name, args, outcome)  # logged by memory_tools; NOT a "read": it must not use the read budget
             return _result(block, text, not ok)
+        if name == cto_tools.TOOL_NAME:  # a plan for the COO (CAO and CMO; the CTO has its own router). Staged on the outcome; nothing is written here.
+            if name not in tool_names(role):
+                return _result(block, f"{name} is not one of your tools", True)
+            text, ok = cto_tools.submit(args, outcome)
+            return _result(block, text, not ok)
         if name == QUEUE_TOOL and name in tool_names(role):
             text, ok, target, rows = await knowledge_queue.handle(role, args, outcome)
             entry = {"tool": name, "target": target, "ok": ok, "rows": rows}
@@ -303,7 +315,7 @@ async def handle_block(role: str, block: Any, outcome: ExecOutcome) -> dict[str,
             if name not in tool_names(role):
                 return _result(block, f"{name} is not one of your tools", True)
             text, ok, target, rows = await coo_tools.handle(role, name, args, outcome)
-            if name == coo_tools.AUDIT_TOOL:  # a read: logged like one, but it does not spend the read budget (coo_tools bounds it itself)
+            if name in (coo_tools.AUDIT_TOOL, coo_tools.REPORT_TOOL):  # a read: logged like one, but it does not spend the read budget (coo_tools bounds it itself)
                 await _log(role, {"tool": name, "target": target, "ok": ok, "rows": rows})
             return _result(block, text, not ok)
         if name not in READ_TOOLS:
