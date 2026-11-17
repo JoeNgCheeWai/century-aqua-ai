@@ -121,6 +121,8 @@ class WithFakes(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(setattr, vector_db, "_index", None)
+        memory_tools._reset_log_breaker()  # the audit-log circuit breaker is module state: one test's failed write must not silence the next test's log
+        self.addCleanup(memory_tools._reset_log_breaker)
 
 
 class WithDb(WithFakes):
