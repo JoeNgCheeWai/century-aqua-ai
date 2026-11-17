@@ -23,6 +23,7 @@ This module deliberately does not change cao_agent.py or coo_agent.py: both are 
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -155,6 +156,24 @@ def log_tools_available(tool_list: list[dict]) -> None:
     print(f"CTO tools available: {[t['name'] for t in tool_list]} (github token set: {tools.configured()})", flush=True)
 
 
+async def _logged_create(client, *, call: str, **kwargs):
+    """
+    EVERY CTO model call goes through here (the first call, each tool-loop round, the final tools-off call and the no-tools review), so the
+    DIAGNOSTIC log lines below cannot be skipped by one path. Prints (not logger.info, so Render shows it) what is really sent and what came back:
+    the max_tokens in the request next to the raw environment variable, the model, the size of the input, and then the stop reason, the usage
+    the API reports and the seconds the call took. Sizes and names only: never the prompt, the message or any key. The call itself is unchanged.
+    """
+    sent = kwargs.get("max_tokens")
+    input_chars = len(str(kwargs.get("system") or "")) + sum(len(str(m.get("content"))) for m in kwargs.get("messages") or [] if isinstance(m, dict))
+    print(f"[CTO DEBUG] Calling model with max_tokens={sent}, env_var={os.getenv('CTO_MAX_TOKENS')} "
+          f"(call={call}, model={kwargs.get('model')}, input_chars={input_chars}, tools_offered={len(kwargs.get('tools') or [])})", flush=True)
+    started = time.perf_counter()
+    response = await client.messages.create(**kwargs)
+    print(f"[CTO DEBUG] Response complete. stop_reason={getattr(response, 'stop_reason', None)}, usage={getattr(response, 'usage', None)} "
+          f"(call={call}, seconds={time.perf_counter() - started:.1f})", flush=True)
+    return response
+
+
 def _normal_path(path: str) -> str:
     return path.strip().lower()
 
@@ -189,8 +208,8 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
     read = outcome.read
     made = 0
     diagnosed = 0
-    response = await client.messages.create(messages=convo, **common)
-    for _ in range(MAX_TOOL_ROUNDS):
+    response = await _logged_create(client, call="initial", messages=convo, **common)
+    for round_no in range(1, MAX_TOOL_ROUNDS + 1):
         if response.stop_reason != "tool_use":
             return response, outcome
         results = []
@@ -231,13 +250,13 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
         if not results:
             return response, outcome
         convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": results}]
-        response = await client.messages.create(messages=convo, **common)
+        response = await _logged_create(client, call=f"tool-round-{round_no}", messages=convo, **common)
     if response.stop_reason == "tool_use":
         # Still asking after the last round: one more call with tools switched off so the model must write its answer.
         pending = [{"type": "tool_result", "tool_use_id": b.id, "is_error": True, "content": "Tool limit reached. Write your final answer now."}
                    for b in response.content if getattr(b, "type", None) == "tool_use"]
         convo = [*convo, {"role": "assistant", "content": response.content}, {"role": "user", "content": pending}]
-        response = await client.messages.create(messages=convo, tool_choice={"type": "none"}, **common)
+        response = await _logged_create(client, call="final-tools-off", messages=convo, tool_choice={"type": "none"}, **common)
     return response, outcome
 
 
@@ -407,7 +426,9 @@ async def get_cto_result(
         response, outcome = await _create_with_reader(_get_client(), model=model_id, system=system, messages=messages)
     else:  # a review of another executive's recommendation: no tools, exactly as before
         log_tools_available([])
-        response = await _get_client().messages.create(
+        response = await _logged_create(
+            _get_client(),
+            call="review-no-tools",
             model=model_id,
             max_tokens=CTO_MAX_TOKENS,
             system=system,
