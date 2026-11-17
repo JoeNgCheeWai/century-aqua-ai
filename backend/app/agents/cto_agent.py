@@ -80,7 +80,13 @@ PLAN_DROPPED_NOTE_REQUEST_KEPT = (
     "not read first. A request is still waiting on the Authorizations page, but approving it will NOT open a pull request. Ask me "
     "again, and I will read the file first and prepare the plan properly."
 )
-DEFAULT_CTO_MAX_TOKENS = 16384
+# THE HARD CAP on every CTO model call (the planning answer, each round of the tool loop, and a review). It was 16384, and a long answer that ran
+# for minutes hit the web host's timeout or was cut off mid-JSON, which drops the authorization_request and leaves the CEO in an "ask again" loop.
+# 2000 tokens is enough for a concise plan with a snippet or two (the prompt asks for under 200 words for a plan) and finishes in about 10 to 15
+# seconds. It is a CEILING, not just a default: the CTO_MAX_TOKENS environment variable may lower it but can never raise it, so a stale value in the
+# Render dashboard (render.yaml used to say 16384) cannot silently undo the cap. To raise it, change this constant in code and review it.
+CTO_MAX_TOKENS_CEILING = 2000
+DEFAULT_CTO_MAX_TOKENS = CTO_MAX_TOKENS_CEILING
 
 
 def _int_env(name: str, default: int) -> int:
@@ -91,7 +97,7 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-CTO_MAX_TOKENS = _int_env("CTO_MAX_TOKENS", DEFAULT_CTO_MAX_TOKENS)
+CTO_MAX_TOKENS = min(_int_env("CTO_MAX_TOKENS", DEFAULT_CTO_MAX_TOKENS), CTO_MAX_TOKENS_CEILING)
 
 _client: AsyncAnthropic | None = None
 
