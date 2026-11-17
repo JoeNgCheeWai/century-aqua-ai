@@ -154,10 +154,12 @@ class OnlyTheCtoHoldsTheToolTests(unittest.TestCase):
         names = [t["name"] for t in [cto_agent.tools.READ_TOOL_SPEC, cto_agent.diagnostics.TOOL_SPEC, cto_tools.SPEC, *cto_agent.memory_tools.SPECS]]
         self.assertEqual(names, ["github_read_file", "diagnose_boardroom_session", "submit_plan_for_approval", "save_memory", "search_memory"])
 
-    def test_no_other_executive_is_offered_it_and_the_coos_approval_tools_are_unchanged(self):
-        for role in ("cao", "coo", "cmo", "cto", "ceo", ""):
+    def test_the_cao_and_the_cmo_may_submit_a_plan_to_the_coo_but_the_coo_never_does_and_the_coos_authority_tools_are_unchanged(self):
+        for role in ("coo", "cto", "ceo", ""):  # the CTO has its own router; the COO decides plans, it does not submit them
             self.assertNotIn("submit_plan_for_approval", exec_tools.tool_names(role), role)
-        self.assertIn("review_cto_task", exec_tools.tool_names("coo"))
+        for role in ("cao", "cmo"):
+            self.assertIn("submit_plan_for_approval", exec_tools.tool_names(role), role)
+        self.assertIn("review_executive_task", exec_tools.tool_names("coo"))
 
     def test_the_schema_requires_the_three_fields_and_limits_the_risk_values(self):
         schema = cto_tools.SPEC["input_schema"]
@@ -189,7 +191,8 @@ class ThroughTheRealCtoLoopTests(GuardedTestCase):
         self.assertEqual((request["submitted_via"], request["status"], request["executed"]), ("submit_plan_for_approval", "pending_human_approval", False))
         self.assertEqual(recorded.await_args.kwargs["authorization_request"], request)  # what is stored in AgentAuditLog.authorizationRequest
         self.assertIn("request #77", result.reply)
-        self.assertIn("no code is written until you ask me for it", result.reply)
+        self.assertIn("waiting for the COO's review", result.reply)
+        self.assertIn("no code is written until it is asked for", result.reply)
         tool_result = client.calls[1]["messages"][-1]["content"][0]
         self.assertEqual((tool_result["tool_use_id"], tool_result["is_error"]), ("tu_plan", False))
         self.assertIn("Plan staged", tool_result["content"])
@@ -222,7 +225,7 @@ class ThroughTheRealCtoLoopTests(GuardedTestCase):
         result, _, _ = self.ask([plan_call(), text_reply(rich)], audit_id=5)
         self.assertIsNotNone(result.authorization_request["execution_plan"])
         self.assertNotIn("submitted_via", result.authorization_request)
-        self.assertNotIn("Plan submitted for your approval", result.reply)
+        self.assertNotIn("Plan submitted for approval", result.reply)
         self.assertTrue(any("also used" in f for f in result.format_findings))
 
     def test_a_refused_call_stages_nothing_and_the_model_is_told_why_so_it_can_fix_it(self):
@@ -248,10 +251,10 @@ class ThePromptTellsTheCtoHowToUseTheToolTests(unittest.TestCase):
             self.assertIn(needle, text, needle)
         self.assertIn("adds its number to your reply", cto_tools.submit({"plan_summary": PLAN, "files_to_change": PATHS, "risk_level": "low"}, cto_agent.ToolOutcome())[0])
 
-    def test_only_the_ctos_prompt_has_it(self):
+    def test_the_coo_prompt_does_not_tell_it_to_submit_plans(self):
         from app.agents import cao_agent, cmo_agent, coo_agent
 
-        for module in (cao_agent, coo_agent, cmo_agent):
+        for module in (coo_agent,):
             self.assertNotIn("submit_plan_for_approval", module.BASE_SYSTEM_PROMPT, module.__name__)
 
     def test_the_prompt_stays_inside_the_size_guard_and_never_asks_the_model_to_hide_its_reasoning(self):

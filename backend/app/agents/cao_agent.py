@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from anthropic import AsyncAnthropic
 
 from app.agents.base_constitution import build_system_prompt
-from app.agents import exec_checks, exec_requests, exec_tools, language_guard, operational_approval
+from app.agents import cto_tools, exec_checks, exec_requests, exec_tools, language_guard, operational_approval
 from app.agents.cao_reasoning import STRUCTURED_CHAT_REPLY_CHARS, load_json_object, parse_cao_output
 from app.agents.chat_reply import vetted_chat_reply
 from app.agents.model_tiers import resolve_model
@@ -223,6 +223,12 @@ async def get_cao_result(
             authorization_request["reads"] = exec_checks.reads_record(outcome)
         if request_findings:
             logger.warning("CAO request: %s", "; ".join(request_findings))
+    # A plan the CAO submitted through submit_plan_for_approval: validated when the tool ran, so it does not depend on the answer's JSON. Used only when the
+    # JSON gave no request of its own. One request per answer, either way. It has no file contents, so approving it records the decision and runs nothing.
+    staged_plan = outcome.plan_request if authorization_request is None else None
+    if staged_plan is not None:
+        authorization_request = {**staged_plan, "reads": exec_checks.reads_record(outcome)}
+        logger.warning("CAO request: it came from submit_plan_for_approval")
 
     # Scored on the model's own words (the recommendation and its reasoning chain), BEFORE
     # code adds any framing, so the score reflects what the model did and not what was
@@ -283,7 +289,9 @@ async def get_cao_result(
         )
     # COO-LED APPROVAL (ships OFF): code sends animals, chemicals, statutory reporting and money to the CEO, always (exec_approval). Never raises.
     note = ""
-    if audit_id is not None and authorization_request is not None:
+    if staged_plan is not None:  # the number is the audit entry id, known only now; code writes this line, so with no audit row it says so plainly
+        note = cto_tools.staged_plan_note(audit_id)
+    elif audit_id is not None and authorization_request is not None:
         note = operational_approval.approval_note(await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request))
         note = note or language_guard.ready_note(False)
     if note:

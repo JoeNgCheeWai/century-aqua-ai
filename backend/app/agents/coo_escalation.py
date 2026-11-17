@@ -56,40 +56,78 @@ TEXT_RULES = (
 
 
 def _text(request: dict[str, Any], plan: dict[str, Any] | None) -> str:
-    parts = [request.get("action_summary"), request.get("impact"), (plan or {}).get("pr_title"), (plan or {}).get("pr_body")]
+    parts = [request.get("action_summary"), request.get("impact"), request.get("plan_summary"), (plan or {}).get("pr_title"), (plan or {}).get("pr_body")]
     return " ".join(str(p) for p in parts if p)
 
 
 def escalation_reasons(request: dict[str, Any]) -> list[str]:
     """
-    Every reason this stored CTO authorization request is the CEO's, in plain words ([] means none was found). Pure: no database, no network.
+    Every reason this stored authorization request is not the COO's to approve, in plain words ([] means none was found): the CRITICAL topics first
+    (critical_reasons), then the completeness problems (completeness_reasons). Pure: no database, no network.
     NEVER RAISES for a malformed request: a request that cannot be read is itself a reason.
     """
+    return list(dict.fromkeys([*critical_reasons(request), *completeness_reasons(request)]))[:MAX_REASONS]
+
+
+def critical_reasons(request: dict[str, Any]) -> list[str]:
+    """
+    The reasons a task is CRITICAL, so it is the CEO's decision and the CEO is notified: critical risk, commands for a person to run, and the CEO's
+    list (database schema, security or authentication, governance rules, dependencies or deployment, billing, a new third-party service). Decided
+    from the file PATHS and the plain words of the task, never from the code inside a file. NEVER RAISES: an unreadable request is critical.
+    """
     try:
-        return _reasons(request)
+        return _critical(request)
     except Exception as exc:  # a checker that crashes must never wave a task through
         return [f"the task could not be checked ({type(exc).__name__})"]
 
 
-def _reasons(request: dict[str, Any]) -> list[str]:
+def completeness_reasons(request: dict[str, Any]) -> list[str]:
+    """
+    Why a task is not FULLY REPORTED or failed its code self-check. These send a task back; they are not critical, so the CEO is not notified for them.
+    A plan submitted through submit_plan_for_approval carries its own plan_summary instead of the three-part plain summary, so that is what is checked.
+    """
+    try:
+        return _completeness(request)
+    except Exception as exc:
+        return [f"the task could not be checked ({type(exc).__name__})"]
+
+
+def _plan(request: dict[str, Any]) -> dict[str, Any] | None:
+    return request.get("execution_plan") if isinstance(request.get("execution_plan"), dict) else None
+
+
+def _critical(request: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     if str(request.get("risk_level")) == "critical":
         reasons.append("it is rated critical risk")
-    if request.get("proposed_commands"):
+    if request.get("proposed_commands") or request.get("deployment_commands"):  # the CTO names them proposed_commands, the CMO deployment_commands
         reasons.append("it carries commands for a person to run")
-    plan = request.get("execution_plan") if isinstance(request.get("execution_plan"), dict) else None
-    items = [i for i in (plan or {}).get("files_to_update", []) if isinstance(i, dict)]
-    for item in items:
-        path = str(item.get("path", ""))
+    plan = _plan(request)
+    paths = [str(i.get("path", "")) for i in (plan or {}).get("files_to_update", []) if isinstance(i, dict)]
+    paths += [str(p) for p in request.get("files_to_change") or [] if isinstance(p, str)]  # a plan submitted through the tool names its files here
+    for path in paths:
         reasons.extend(f"it changes {label} ({path})" for label, pattern in PATH_RULES if pattern.search(path))
     text = _text(request, plan)
     reasons.extend(label for label, pattern in TEXT_RULES if pattern.search(text))
+    return list(dict.fromkeys(reasons))[:MAX_REASONS]
+
+
+def _completeness(request: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    plan = _plan(request)
     self_check_passed = True
     if plan is not None:
         check = plan_checks.check_plan(plan, None)
         self_check_passed = check.passed
         if not check.passed:
             reasons.append("its plan failed the code self-check: " + "; ".join(check.failures[:2]))
-    reasons.extend(coo_review.reported_problems(request, self_check_passed))
-    unique = list(dict.fromkeys(reasons))
-    return unique[:MAX_REASONS]
+    if request.get("submitted_via"):  # a tool-submitted plan: its plan_summary is the plain-language report
+        if not str(request.get("plan_summary") or "").strip():
+            reasons.append("it has no plan summary")
+        if not str(request.get("rollback_plan") or "").strip():
+            reasons.append("it has no rollback plan")
+        if not str(request.get("impact") or "").strip():
+            reasons.append("it does not say what is affected")
+    else:
+        reasons.extend(coo_review.reported_problems(request, self_check_passed))
+    return list(dict.fromkeys(reasons))[:MAX_REASONS]

@@ -353,12 +353,7 @@ def _self_check(authorization_request: dict | None, outcome: ToolOutcome) -> tup
 
 def staged_plan_note(audit_id: int | None) -> str:
     """The line code adds under a plan submitted with submit_plan_for_approval: its number, and the truth that it is waiting, not approved."""
-    if audit_id is None:
-        return ("**Plan not recorded:** I prepared this plan for your approval, but the audit log was unavailable, so it is NOT waiting on the Authorizations page. "
-                "Ask me again in a moment.")
-    return (f"**Plan submitted for your approval (request #{audit_id}):** it is waiting on the Authorizations page. Approving it records your decision only; "
-            "no code is written until you ask me for it.")
-
+    return cto_tools.staged_plan_note(audit_id)  # shared with the CAO and the CMO, who submit plans the same way
 
 def _check_failed_note(findings: list[str], request_kept: bool) -> str:
     """The truth, first, when the self-check dropped the plan (the model may have written that it is ready). Code-written."""
