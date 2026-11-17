@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.agents import execution_plan as plan_rules
-from app.agents import knowledge_queue, memory_tools
+from app.agents import coo_tools, knowledge_queue, memory_tools
 from app.governance import admin_store, db, farm_records, operations_log
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,9 @@ class ExecOutcome:
     # The executives' episodic memory (memory_tools.py): how many saves and searches this answer made, so code can bound them.
     memory_saves: int = 0
     memory_searches: int = 0
+    # The COO's approval authority (coo_tools.py): how many CTO-task decisions and audit-log reads this answer made, so code can bound them.
+    coo_decisions: int = 0
+    audit_queries: int = 0
     inventory_rows: int = 0
     cost_rows: int = 0
     farm_rows: int = 0
@@ -121,7 +124,8 @@ SPECS: dict[str, list[dict[str, Any]]] = {
         _spec("diagnose_operational_routing",
               "Find out WHY a task did not reach COO review, or why a COO verdict failed. Read-only. "
               "Use it immediately when asked why; never offer to investigate.", _audit_id_prop()),
-        knowledge_queue.TOOL_SPEC,  # the one tool here that WRITES (the queue, the knowledge base): COO only, switched off by default, bounded
+        knowledge_queue.TOOL_SPEC,  # writes the queue and the knowledge base: COO only, switched off by default, bounded
+        *coo_tools.SPECS,  # APPROVAL AUTHORITY (COO only): review_cto_task decides a pending CTO task, get_audit_logs investigates. Never in another role's list.
     ],
     "cmo": [
         _spec("read_brand_file",
@@ -294,6 +298,13 @@ async def handle_block(role: str, block: Any, outcome: ExecOutcome) -> dict[str,
             await knowledge_queue._log({"action": target.split(":")[-1], "request_id": None if args.get("action") == "list" else (rows if isinstance(rows, int) else args.get("request_id")), "ok": ok,
                                         "note": f"requester={args.get('requester')}" if args.get("action") == "add" else ""})
             outcome.reads.append(entry)
+            return _result(block, text, not ok)
+        if name in coo_tools.TOOL_NAMES:  # the COO's approval authority. Another role is refused here, and coo_tools.handle refuses it a second time.
+            if name not in tool_names(role):
+                return _result(block, f"{name} is not one of your tools", True)
+            text, ok, target, rows = await coo_tools.handle(role, name, args, outcome)
+            if name == coo_tools.AUDIT_TOOL:  # a read: logged like one, but it does not spend the read budget (coo_tools bounds it itself)
+                await _log(role, {"tool": name, "target": target, "ok": ok, "rows": rows})
             return _result(block, text, not ok)
         if name not in READ_TOOLS:
             return None

@@ -54,7 +54,8 @@ CAO_TOOLS_PROMPT = ("YOUR READ-ONLY TOOLS (an exception to the 'no tools' rule a
 COO_TOOLS_PROMPT = ("YOUR READ-ONLY TOOLS (an exception to the 'no tools' rule above; they only READ)\n"
                     "- read_farm_records: inventory and cost records. - read_audit_log: decisions only, never other roles' question or answer text.\n"
                     "- read_operations_summary: exact counts written by code. - diagnose_operational_routing: why a task did not reach your review, or why a verdict failed.\n"
-                    "- manage_fetch_queue: your knowledge queue (add, list, start, fetch, complete, process). The one tool that WRITES, and only to the queue and the knowledge base.\n"
+                    "- manage_fetch_queue: your knowledge queue (add, list, start, fetch, complete, process). It WRITES, and only to the queue and the knowledge base.\n"
+                    "- get_audit_logs: investigate past actions, errors and decisions across all executives (metadata only). - review_cto_task: approve, reject or escalate a pending CTO task (see APPROVAL AUTHORITY). It records a decision; it never merges or deploys anything.\n"
                     "A plan must state costs and quantities, and must not say anything is in stock or available unless an inventory record you read shows it.\n"
                     + _RULES + "\n" + _REQUEST + "\n\n" + COO_QUEUE_PROMPT + "\n\n" + MEMORY_PROMPT)
 CMO_TOOLS_PROMPT = ("YOUR READ-ONLY FILE TOOLS (besides generate_image; they only READ)\n"
