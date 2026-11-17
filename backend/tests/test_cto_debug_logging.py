@@ -33,7 +33,7 @@ def reply_with_usage(reply):
 
 
 class DebugLoggingTests(GuardedTestCase):
-    def ask(self, replies, env_var="2000", **kwargs):
+    def ask(self, replies, env_var="4000", **kwargs):
         client = ScriptedClient([reply_with_usage(r) for r in replies])
         env = {k: v for k, v in os.environ.items() if k not in NO_DB}
         env["CTO_MAX_TOKENS"] = env_var
@@ -43,10 +43,10 @@ class DebugLoggingTests(GuardedTestCase):
         return [line for line in out.getvalue().splitlines() if "[CTO DEBUG]" in line], client
 
     def test_each_call_prints_the_sent_max_tokens_beside_the_env_var_and_then_the_stop_reason_and_usage(self):
-        lines, client = self.ask([text_reply(answer({}))])
+        lines, client = self.ask([text_reply(answer({}))], env_var="4000")
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(len(lines), 2)
-        self.assertIn("Calling model with max_tokens=2000, env_var=2000", lines[0])
+        self.assertIn("Calling model with max_tokens=4000, env_var=4000", lines[0])
         self.assertIn("Response complete. stop_reason=end_turn", lines[1])
         self.assertIn("input_tokens=1234", lines[1])
         self.assertIn("output_tokens=567", lines[1])
@@ -54,8 +54,8 @@ class DebugLoggingTests(GuardedTestCase):
 
     def test_a_stale_env_var_is_visible_next_to_the_value_that_was_actually_sent(self):
         lines, client = self.ask([text_reply(answer({}))], env_var="16384")
-        self.assertEqual(client.calls[0]["max_tokens"], 2000)  # clamped by the ceiling
-        self.assertIn("max_tokens=2000, env_var=16384", lines[0])
+        self.assertEqual(client.calls[0]["max_tokens"], 4000)  # clamped by the ceiling
+        self.assertIn("max_tokens=4000, env_var=16384", lines[0])
 
     def test_every_round_of_the_tool_loop_is_logged_in_pairs_with_its_own_label(self):
         lines, client = self.ask([tool_reply("README.md"), tool_reply("README.md"), text_reply(answer({}))])
@@ -63,7 +63,7 @@ class DebugLoggingTests(GuardedTestCase):
         before = [line for line in lines if "Calling model" in line]
         after = [line for line in lines if "Response complete" in line]
         self.assertEqual((len(before), len(after)), (3, 3))
-        self.assertTrue(all("max_tokens=2000" in line for line in before))
+        self.assertTrue(all("max_tokens=4000" in line for line in before))
         for label in ("call=initial", "call=tool-round-1", "call=tool-round-2"):
             self.assertTrue(any(label in line for line in before), label)
         self.assertIn("stop_reason=tool_use", after[0])

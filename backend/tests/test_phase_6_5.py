@@ -192,7 +192,7 @@ class PromptTests(unittest.TestCase):
             self.assertNotIn("chat_reply", example)
 
     def test_the_output_token_budgets_are_unchanged_except_the_ctos_hard_cap(self):
-        self.assertEqual(cto_agent.DEFAULT_CTO_MAX_TOKENS, 2000)  # deliberately capped: tests/test_cto_max_tokens_cap.py
+        self.assertEqual(cto_agent.DEFAULT_CTO_MAX_TOKENS, 4000)  # deliberately capped: tests/test_cto_max_tokens_cap.py
         self.assertGreaterEqual(cmo_agent.DEFAULT_CMO_MAX_TOKENS, 16384)
 
 

@@ -206,7 +206,7 @@ class PromptTests(unittest.TestCase):
             self.assertIn(needle, text, needle)
 
     def test_the_cto_has_a_token_budget_and_a_length_budget_in_its_prompt(self):
-        self.assertEqual(cto_agent.DEFAULT_CTO_MAX_TOKENS, 2000)  # the hard cap (tests/test_cto_max_tokens_cap.py); the prompt keeps answers inside it
+        self.assertEqual(cto_agent.DEFAULT_CTO_MAX_TOKENS, 4000)  # the hard cap (tests/test_cto_max_tokens_cap.py); the prompt keeps answers inside it
         self.assertIn("LENGTH BUDGET", cto_prompt.CTO_REASONING_PROMPT)
         self.assertIn("COMPLETE", cto_prompt.CTO_REASONING_PROMPT)
 

@@ -1,12 +1,13 @@
 """
-THE CTO'S HARD max_tokens CAP (2000): every model call the CTO makes is capped, and nothing in the environment can raise the cap.
+THE CTO'S HARD max_tokens CAP (4000): every model call the CTO makes is capped, and nothing in the environment can raise the cap.
 
 Why: a 16384-token answer could run for minutes, hit the web host's timeout or be cut off mid-JSON, and a cut-off answer loses its
-authorization_request, which leaves the CEO asking again. A concise plan fits in 2000 tokens and finishes in seconds. The "full code" step is a
-separate conversational turn with its own fresh 2000-token budget, so no retry logic is needed.
+authorization_request, which leaves the CEO asking again. 2000 was then found to be too tight (the live logs showed stop_reason=max_tokens at
+output_tokens=2000, so the JSON never closed), so the cap is 4000: room to finish the JSON around a concise plan, in roughly 20 to 25 seconds. The
+"full code" step is a separate conversational turn with its own fresh 4000-token budget, so no retry logic is needed.
 
 Proven here with a scripted model (no network):
-  * the default is 2000, and CTO_MAX_TOKENS in the environment can lower the cap but never raise it (a stale 16384 on the host is clamped);
+  * the default is 4000, and CTO_MAX_TOKENS in the environment can lower the cap but never raise it (a stale 16384 on the host is clamped);
   * a bad value (not a number, zero, negative, empty) falls back to the cap;
   * the cap is on the first call of the tool loop AND on every later round, on the final tools-off call, and on the no-tools review path;
   * an answer that still hits the cap is handled as before: the length-limit note is added and no half-built authorization request is invented.
@@ -34,7 +35,7 @@ from app.agents import cto_agent  # noqa: E402
 from tests.test_cto_reads_before_writing import ScriptedClient, answer, text_reply, tool_reply  # noqa: E402
 from tests.test_read_file_tool import GuardedTestCase  # noqa: E402
 
-CAP = 2000
+CAP = 4000
 NO_DB = ("GOVERNANCE_DATABASE_URL", "DATABASE_URL", "PINECONE_API_KEY", "PINECONE_INDEX")
 
 
@@ -56,7 +57,7 @@ def reloaded(value):
 
 
 class TheCapIsAHardCeilingTests(unittest.TestCase):
-    def test_the_default_is_2000_and_the_ceiling_is_2000(self):
+    def test_the_default_is_4000_and_the_ceiling_is_4000(self):
         self.assertEqual((cto_agent.DEFAULT_CTO_MAX_TOKENS, cto_agent.CTO_MAX_TOKENS_CEILING), (CAP, CAP))
         self.assertEqual(reloaded(None), CAP)
 
@@ -65,7 +66,7 @@ class TheCapIsAHardCeilingTests(unittest.TestCase):
         self.assertEqual(reloaded("1"), 1)
 
     def test_the_environment_can_never_raise_it_so_a_stale_host_value_cannot_undo_the_cap(self):
-        for stale in ("16384", "8192", "2001", "999999999"):
+        for stale in ("16384", "8192", "4001", "999999999"):
             self.assertEqual(reloaded(stale), CAP, stale)
 
     def test_a_bad_value_falls_back_to_the_cap(self):
@@ -114,7 +115,7 @@ class EveryModelCallIsCappedTests(GuardedTestCase):
 
 
 class AnAnswerThatStillHitsTheCapTests(GuardedTestCase):
-    """The prompt asks for concise answers, so hitting 2000 means it ignored that. The result must still be safe, never a half-built request."""
+    """The prompt asks for concise answers, so hitting 4000 means it ignored that. The result must still be safe, never a half-built request."""
 
     def cut_result(self):
         full = json.dumps(answer({"frontend/src/components/mc/New.tsx": "export default function New() { return null; }\n"}))
