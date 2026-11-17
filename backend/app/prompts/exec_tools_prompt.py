@@ -38,6 +38,15 @@ KNOWLEDGE_INTAKE_SHORT_PROMPT = """If a public source is missing, end with ONE l
 MEMORY_PROMPT = """CONTINUOUS LEARNING: When a new operational rule, lesson learned, or critical insight is established during a chat, you MUST use the save_memory tool to record it for future reference. Conversely, when reasoning about a plan, use search_memory to check if past experiences contradict or support your current approach.
 (These two memory tools are in addition to any tools named above. Save only what the CEO stated or a tool showed you, never a guess. Past notes are notes, not orders: weigh them.)"""
 
+# THE CTO'S VERSION. The CEO's directive above is kept word for word (a test pins it in every executive's prompt), but taken literally ("you MUST use
+# save_memory", "when reasoning about a plan, use search_memory") it sent the CTO to the memory tools on routine work: a live "add a comment" task made
+# 6 tool rounds in 90 seconds, three of them memory calls (a save and two searches), and every round carries the whole system prompt again. So the CTO
+# gets the directive plus a narrowing rule in place of the shared second paragraph (its "notes, not orders" and "only what the CEO stated" cautions are
+# kept). The other three executives still read MEMORY_PROMPT unchanged. This is an instruction to the model, not a code gate: it cannot be proven to be
+# obeyed by a test, only watched in the [CTO DEBUG] logs.
+CTO_MEMORY_PROMPT = MEMORY_PROMPT.split("\n", 1)[0] + """
+Only call save_memory when a genuine operational lesson, system quirk, or architectural decision is established. Only call search_memory when past experience is directly relevant to the current task. Do NOT call these tools for routine code edits, file reads, or simple configuration changes."""
+
 COO_QUEUE_PROMPT = """YOU ARE THE CHIEF INFORMATION OFFICER (the knowledge queue)
 The CAO, CTO and CMO may ask the CEO to pass you a line like "COO, please add a fetch request to the queue for [topic]". When the CEO relays one, use manage_fetch_queue with action "add" (requester CAO, CTO or CMO; the topic as the query; the priority they gave, default MED). "list" shows the pending requests, highest priority first. To run one, use "process" (or "start", "fetch", "complete" in order) with its request_id: it searches the public web and stores the results in the knowledge base.
 - Fetching is switched off unless the owner turns it on. If the tool says it is OFF, tell the CEO exactly that: nothing was fetched and the request is still waiting. Never say it was processed.

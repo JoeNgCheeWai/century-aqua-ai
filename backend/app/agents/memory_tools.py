@@ -29,6 +29,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -477,12 +478,31 @@ def _log_sync(role: str, entry: dict[str, Any]) -> None:
             (f"ai_{role}", "executive_memory", "ExecutiveMemory", str(entry.get("vector_id") or "")[:60], db.json_param(entry)))
 
 
+# THE AUDIT-LOG GUARD. The log write is best-effort and must never slow the answer. A timeout alone bounded ONE write, but every memory call made its own, so
+# on a slow database (a cold Neon connection) three calls in one answer could each wait the full timeout. Now: a SHORT timeout, and a circuit breaker. After
+# a write fails or times out the log is skipped for LOG_COOLDOWN_SECONDS, so an answer waits for at most one failed write, not one per call. The console line
+# is always printed, so a skipped write still leaves a trace in Render's logs. The worker thread of a timed-out write cannot be cancelled and finishes on
+# its own; the answer no longer waits for it. A skipped write is lost (the AdminAuditLog row is not written later).
+LOG_TIMEOUT_SECONDS = 2.0
+LOG_COOLDOWN_SECONDS = 60.0
+_log_skip_until = 0.0  # time.monotonic() before which the DB write is skipped; 0 means the breaker is closed
+
+
+def _reset_log_breaker() -> None:
+    global _log_skip_until
+    _log_skip_until = 0.0
+
+
 async def _log(role: str, entry: dict[str, Any]) -> None:
+    global _log_skip_until
     failed = f" FAILED at {entry['step']}: {entry.get('reason', '')}" if entry.get("step") else ""
     print(f"{role.upper()} memory: {entry['tool']} ok={entry['ok']} {entry.get('vector_id', '')}{failed}", flush=True)
     if not db.is_configured():
         return
+    if time.monotonic() < _log_skip_until:  # the breaker is open: a recent write failed, so do not make this answer wait for another
+        return
     try:
-        await asyncio.wait_for(db.run(_log_sync, role, entry), timeout=4.0)
+        await asyncio.wait_for(db.run(_log_sync, role, entry), timeout=LOG_TIMEOUT_SECONDS)
     except Exception as exc:  # best-effort: memory is never blocked by its log
-        logger.error("memory_tools: could not log (%s)", type(exc).__name__)
+        _log_skip_until = time.monotonic() + LOG_COOLDOWN_SECONDS
+        logger.error("memory_tools: could not log (%s); skipping the audit log for %.0f s", type(exc).__name__, LOG_COOLDOWN_SECONDS)

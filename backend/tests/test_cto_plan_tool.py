@@ -244,8 +244,9 @@ class ThePromptTellsTheCtoHowToUseTheToolTests(unittest.TestCase):
     def test_the_cto_prompt_carries_the_plan_approval_instructions(self):
         text = cto_agent.BASE_SYSTEM_PROMPT
         for needle in ("PLAN APPROVAL:", "concise plan", "no file contents", "call submit_plan_for_approval once", "under 500 words",
-                       'leave "authorization_request" null', "never write authorization metadata in text", "request number"):
+                       'leave "authorization_request" null', "never write authorization metadata in text"):
             self.assertIn(needle, text, needle)
+        self.assertIn("adds its number to your reply", cto_tools.submit({"plan_summary": PLAN, "files_to_change": PATHS, "risk_level": "low"}, cto_agent.ToolOutcome())[0])
 
     def test_only_the_ctos_prompt_has_it(self):
         from app.agents import cao_agent, cmo_agent, coo_agent
