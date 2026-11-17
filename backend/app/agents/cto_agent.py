@@ -83,10 +83,12 @@ PLAN_DROPPED_NOTE_REQUEST_KEPT = (
 )
 # THE HARD CAP on every CTO model call (the planning answer, each round of the tool loop, and a review). It was 16384, and a long answer that ran
 # for minutes hit the web host's timeout or was cut off mid-JSON, which drops the authorization_request and leaves the CEO in an "ask again" loop.
-# 2000 tokens is enough for a concise plan with a snippet or two (the prompt asks for under 200 words for a plan) and finishes in about 10 to 15
-# seconds. It is a CEILING, not just a default: the CTO_MAX_TOKENS environment variable may lower it but can never raise it, so a stale value in the
-# Render dashboard (render.yaml used to say 16384) cannot silently undo the cap. To raise it, change this constant in code and review it.
-CTO_MAX_TOKENS_CEILING = 2000
+# It was then 2000, and the Render logs showed the cap was TOO TIGHT: the model filled all 2000 output tokens (stop_reason=max_tokens) before it could
+# close the JSON object (the reasoning chain and the authorization_request come after the response text), so the request was lost anyway. 4000 leaves
+# room to finish the JSON around a concise plan and takes roughly 20 to 25 seconds, inside the host's 60 second limit. It is a CEILING, not just a
+# default: the CTO_MAX_TOKENS environment variable may lower it but can never raise it, so a stale value in the Render dashboard (it once said 16384)
+# cannot silently undo the cap. To change it, edit this constant in code and review it.
+CTO_MAX_TOKENS_CEILING = 4000
 DEFAULT_CTO_MAX_TOKENS = CTO_MAX_TOKENS_CEILING
 
 
