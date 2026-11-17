@@ -121,6 +121,11 @@ class TheOldNoToolsWordingWasCorrectedNotLeftContradictingTests(unittest.TestCas
         # Raised from 16000 to 16500 for the short knowledge-intake line (about 60 tokens; see test_executive_parity). A ceiling, not a target.
         self.assertLess(len(SYSTEM) // 4, 16500)
 
+    def test_the_prompt_keeps_at_least_500_tokens_of_headroom_for_future_features(self):
+        # The prompt was trimmed (chore/trim-cto-prompt) after it reached 4 tokens under the ceiling and blocked every new feature. This is the guard that
+        # stops it creeping back: a new instruction has to fit in the space left, or something redundant has to be cut first. Estimated at 4 characters a token.
+        self.assertLess(len(SYSTEM) // 4, 16000, "the CTO prompt has less than 500 tokens of headroom under the 16,500 ceiling: trim before you add")
+
 
 class TheConcisenessRuleIsThereTests(unittest.TestCase):
     """Long feature designs ran past the serverless time limit, so the CTO must open with a short outline (CRITICAL RESPONSE RULE)."""
