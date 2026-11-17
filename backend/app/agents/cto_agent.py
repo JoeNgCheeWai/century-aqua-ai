@@ -23,13 +23,14 @@ This module deliberately does not change cao_agent.py or coo_agent.py: both are 
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 from anthropic import AsyncAnthropic
 
-from app.agents import diagnostics, language_guard, memory_tools, operational_approval, plan_checks, tools
+from app.agents import cto_tools, diagnostics, language_guard, memory_tools, operational_approval, plan_checks, tools
 from app.agents.base_constitution import build_system_prompt
 from app.agents.cao_agent import FRAMING_NOTICE
 from app.agents.cao_reasoning import load_json_object, parse_cao_output
@@ -39,7 +40,7 @@ from app.agents.model_tiers import resolve_model
 from app.governance import audit as audit_module
 from app.governance import strategy_store
 from app.governance.scoring import extract_sources, score_response
-from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CTO_CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT
+from app.prompts.chat_style import AUTHORIZATION_SUMMARY_PROMPT, CTO_CHAT_REPLY_PROMPT, CTO_EXECUTION_PLAN_PROMPT, CTO_PLAN_TOOL_PROMPT
 from app.prompts.cto_prompt import CTO_REASONING_PROMPT, CTO_SYSTEM_PROMPT
 from app.prompts.exec_tools_prompt import KNOWLEDGE_INTAKE_SHORT_PROMPT, MEMORY_PROMPT
 from app.prompts.persona import CTO_ENGINEER_PROMPT, persona_block, thinking_process
@@ -53,6 +54,7 @@ AGENT_ID = "cto"
 # authorization workflow, the execution_plan template and the JSON format below are unchanged.
 CTO_ROLE_PROMPT = (
     persona_block("cto") + "\n\n" + CTO_ENGINEER_PROMPT + "\n\n" + thinking_process("cto") + "\n\n" + CTO_SYSTEM_PROMPT + "\n\n" + CTO_REASONING_PROMPT + "\n\n" + CTO_CHAT_REPLY_PROMPT + "\n\n" + AUTHORIZATION_SUMMARY_PROMPT
+    + "\n\n" + CTO_PLAN_TOOL_PROMPT  # a plan goes through submit_plan_for_approval, so a cut-off answer cannot lose it
     + "\n\n" + CTO_EXECUTION_PLAN_PROMPT + "\n\n" + KNOWLEDGE_INTAKE_SHORT_PROMPT  # the CTO may ask the COO for a source; it cannot reach the queue itself
     + "\n\n" + MEMORY_PROMPT  # the shared episodic memory (save_memory, search_memory)
 )
@@ -128,9 +130,30 @@ The excerpts below come from Century Aqua's document library, which holds aquacu
 EXCERPTS>>>"""
 
 
+# WHEN THE CTO MAY USE THE DOCUMENT LIBRARY. The library holds aquaculture literature, trial data, patents and market reports. A code edit, a file
+# read or a configuration change has nothing in it, but a vector search always returns SOMETHING, so the CTO was being handed irrelevant Biofloc papers
+# for simple code tasks (more input tokens, more latency, and a pull to cite them). Retrieval now runs only when the message itself asks for domain
+# knowledge: it names an aquaculture topic or asks about the library. Whole words only, so a code identifier such as "diseased_flag" or "feeder" does
+# not trigger it. A false positive costs one irrelevant search (the old behaviour); a false negative means the CTO answers a domain question from the
+# prompt alone, which its prompt already tells it to flag. use_rag=False still means never.
+_DOMAIN_TERMS = (
+    "aquaculture", "aquaponics", "aquatic", "biofloc", "fish", "shrimp", "prawn", "tilapia", "salmon", "hatchery", "broodstock", "fingerling",
+    "disease", "pathogen", "vaccine", "probiotic", "antibiotic", "parasite", "mortality", "biosecurity",
+    "water quality", "dissolved oxygen", "ammonia", "nitrite", "nitrate", "salinity", "alkalinity", "ph level", "recirculating",
+    "stocking density", "feed conversion", "feeding rate", "growth rate", "pond", "aeration",
+    "sea tilapia", "snd probiotic", "knowledge base", "document library", "literature", "research paper", "trial data", "patent",
+)
+_DOMAIN_RE = re.compile(r"(?i)(?<![A-Za-z0-9_])(?:" + "|".join(re.escape(t) for t in _DOMAIN_TERMS) + r")(?:s|es)?(?![A-Za-z0-9_])")
+
+
+def needs_domain_knowledge(query: str) -> bool:
+    """True if the message asks for aquaculture or document-library knowledge (see above). Pure; a non-string or empty message is False."""
+    return bool(isinstance(query, str) and _DOMAIN_RE.search(query))
+
+
 async def _build_system_prompt(query: str, use_rag: bool) -> tuple[str, list]:
     """Return the full system prompt (constitution first) and the retrieved sources (empty if none)."""
-    if not use_rag:
+    if not use_rag or not needs_domain_knowledge(query):
         return BASE_SYSTEM_PROMPT, []
 
     # Imported here so a problem in the optional RAG stack can never stop the AI_CTO from
@@ -187,6 +210,10 @@ class ToolOutcome:
     read: set[str] = field(default_factory=set)  # paths read IN FULL (a cut-off file is not here)
     texts: dict[str, str] = field(default_factory=dict)  # the text of each of those files, by lower-case path
     diagnostic: dict | None = None  # the diagnostic report, if the CTO ran the Boardroom diagnostic
+    # submit_plan_for_approval (cto_tools.py): the validated request it STAGED. It is stored with the answer, because the audit row it belongs to does
+    # not exist until the answer is recorded. It survives a final answer that is cut off, which is the point of submitting it through a tool.
+    plan_request: dict | None = None
+    plan_attempts: int = 0
 
 
 async def _create_with_reader(client, *, model: str, system: str, messages: list[dict]):
@@ -202,7 +229,8 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
     """
     # The two read-only tools above, plus the executives' shared episodic memory (memory_tools.py: save_memory, search_memory), the same module and
     # limits the other three executives use through exec_tools. The memory counters are per answer, like the file-read count.
-    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system, "tools": [tools.READ_TOOL_SPEC, diagnostics.TOOL_SPEC, *memory_tools.SPECS]}
+    common = {"model": model, "max_tokens": CTO_MAX_TOKENS, "system": system,
+              "tools": [tools.READ_TOOL_SPEC, diagnostics.TOOL_SPEC, cto_tools.SPEC, *memory_tools.SPECS]}
     log_tools_available(common["tools"])
     memory_counts = SimpleNamespace(memory_saves=0, memory_searches=0)
     convo = list(messages)
@@ -234,9 +262,13 @@ async def _create_with_reader(client, *, model: str, system: str, messages: list
             elif getattr(block, "name", None) in memory_tools.TOOL_NAMES:
                 text, ok, _, _ = await memory_tools.handle(AGENT_ID, block.name, args, memory_counts)
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": not ok, "content": text})
+            elif getattr(block, "name", None) == cto_tools.TOOL_NAME:
+                # The plan goes through a tool, not through the JSON of the final answer, so a cut-off final answer cannot lose it. Staged on the outcome.
+                text, ok = cto_tools.submit(args, outcome)
+                results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": not ok, "content": text})
             elif getattr(block, "name", None) != tools.READ_TOOL_NAME:
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
-                                "content": "Unknown tool. Only github_read_file, diagnose_boardroom_session, save_memory and search_memory exist."})
+                                "content": "Unknown tool. Only github_read_file, diagnose_boardroom_session, submit_plan_for_approval, save_memory and search_memory exist."})
             elif made >= MAX_FILE_READS:
                 results.append({"type": "tool_result", "tool_use_id": block.id, "is_error": True,
                                 "content": f"File-read limit reached ({MAX_FILE_READS} per answer). Work with the files you have already read."})
@@ -317,6 +349,15 @@ def _self_check(authorization_request: dict | None, outcome: ToolOutcome) -> tup
     if not (revised.get("proposed_code_diff") or revised.get("proposed_commands")):
         return None, [*findings, "the authorization_request had nothing left to review without its plan; dropped"], ""
     return revised, findings, ""
+
+
+def staged_plan_note(audit_id: int | None) -> str:
+    """The line code adds under a plan submitted with submit_plan_for_approval: its number, and the truth that it is waiting, not approved."""
+    if audit_id is None:
+        return ("**Plan not recorded:** I prepared this plan for your approval, but the audit log was unavailable, so it is NOT waiting on the Authorizations page. "
+                "Ask me again in a moment.")
+    return (f"**Plan submitted for your approval (request #{audit_id}):** it is waiting on the Authorizations page. Approving it records your decision only; "
+            "no code is written until you ask me for it.")
 
 
 def _check_failed_note(findings: list[str], request_kept: bool) -> str:
@@ -461,6 +502,15 @@ async def get_cto_result(
         authorization_request, check_findings, declaration = _self_check(authorization_request, outcome)
         format_findings.extend(check_findings)
         check_dropped = bool(check_findings)
+    # A plan the CTO submitted through submit_plan_for_approval. It was validated when the tool ran and it does not depend on the final answer's JSON
+    # being complete, so it survives a cut-off answer. A valid request in the JSON itself (one that carries file contents) is richer and wins; the
+    # staged plan is used only when the JSON gave none. One request per answer, either way.
+    staged_plan = outcome.plan_request if authorization_request is None else None
+    if staged_plan is not None:
+        authorization_request = staged_plan
+        format_findings.append("authorization request came from submit_plan_for_approval (not from the answer's JSON)")
+    elif outcome.plan_request is not None:
+        format_findings.append("submit_plan_for_approval was also used, but the answer's own authorization_request was kept (it carries file contents)")
     if format_findings:
         logger.warning("CTO output format: %s", "; ".join(format_findings))
 
@@ -511,7 +561,9 @@ async def get_cto_result(
                 chat_text = chat_text.rstrip() + "\n\n" + declaration
     if response.stop_reason == "max_tokens":
         text += "\n\n[Response reached the length limit. Ask me to continue for the remainder.]"
-        if not parsed.structured:
+        if staged_plan is not None:
+            text += " The plan I submitted for approval was saved separately, so it was not lost."
+        elif not parsed.structured:
             text += (
                 " The structured answer was cut off, so any authorization request it contained was NOT "
                 "recovered. Ask again, and do not act on a change that was only partly described."
@@ -546,11 +598,18 @@ async def get_cto_result(
     # if the COO says yes to integrity, safe and fully reported, is approved under the CEO's delegation. Anything else waits for the CEO.
     # Runs only now, because the task needs its audit row. Never raises. The note is added to what the CEO reads, written by code.
     note = ""
+    if staged_plan is not None:
+        # The request's number is the audit entry id, known only now that the answer is recorded. Code writes this line, never the model, so the number
+        # is real: with no audit id (the database was unavailable) it says plainly that the plan could not be recorded.
+        text += "\n\n" + staged_plan_note(audit_id)
+        if chat_text and chat_text.strip():
+            chat_text = chat_text.rstrip() + "\n\n" + staged_plan_note(audit_id)
     if audit_id is not None and authorization_request is not None:
         routed = await operational_approval.maybe_route(audit_id, AGENT_ID, authorization_request, originals=outcome.texts)
         note = operational_approval.approval_note(routed)
-    if authorization_request is not None and not note:
+    if authorization_request is not None and not note and staged_plan is None:
         # Not routed to the COO (the switch is off, or it was not eligible): the CEO still reads the same collaborative line, in code.
+        # (A plan submitted through the tool already has its own, more exact line above.)
         note = language_guard.ready_note(bool(authorization_request.get("execution_plan")))
     if note:
         text += "\n\n" + note
